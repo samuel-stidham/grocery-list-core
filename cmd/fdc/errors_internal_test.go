@@ -35,10 +35,10 @@ func TestUserHintNamesTheNextStep(t *testing.T) {
 		"binary":      {fmt.Errorf("%w: x", daemon.ErrBinMissing), "make install"},
 		"manager":     {fmt.Errorf("%w: exit status 1", daemon.ErrManager), "systemctl --user status"},
 		"not active":  {fmt.Errorf("%w: fdc.service is failed", daemon.ErrNotActive), "launchctl print gui/$(id -u)/"},
-		"interrupted": {fmt.Errorf("%w while waiting for x", daemon.ErrInterrupted), "may still come up"},
+		"interrupted": {fmt.Errorf("%w while waiting for x", daemon.ErrInterrupted), "rerun the command"},
 		"interrupted bootstrap": {
 			fmt.Errorf("%w between bootstrap attempts: %w", daemon.ErrInterrupted, daemon.ErrManager),
-			"may still come up",
+			"rerun the command",
 		},
 	}
 

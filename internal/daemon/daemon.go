@@ -197,23 +197,27 @@ func replaceFile(path string, content []byte) error {
 }
 
 // Check confirms the service manager reports the service as running: active
-// under systemd, loaded under launchd. Install ends with it, and the command
-// calls it again once the daemon has answered, so a stray process on the
-// port cannot pass for a crash looping unit.
+// under systemd, loaded with a running process under launchd. Install ends
+// with it, and the command calls it again once the daemon has answered, so a
+// stray process on the port cannot pass for a crash looping unit. Both
+// branches ask the runner directly rather than through run, so a negative
+// answer is ErrNotActive alone and the command boundary picks the status
+// hint.
 func (manager *Manager) Check(ctx context.Context, service Service) error {
 	if manager.platform == Darwin {
-		if _, err := manager.launchctl(ctx, "print", manager.target(service)); err != nil {
-			return fmt.Errorf("%w: %w", ErrNotActive, err)
-		}
-
-		return nil
+		return manager.checkAgent(ctx, service)
 	}
 
 	// is-active exits non-zero for anything but active and prints the
 	// state, so the output is the message. When it prints nothing, the
 	// command itself failed and its error is the message.
 	unit := service.Name + ".service"
+
 	state, err := manager.runner.Run(ctx, "systemctl", "--user", "is-active", unit)
+	if cut := interrupted(ctx, err); cut != nil {
+		return cut
+	}
+
 	text := strings.TrimSpace(string(state))
 
 	switch {
@@ -224,6 +228,40 @@ func (manager *Manager) Check(ctx context.Context, service Service) error {
 	default:
 		return fmt.Errorf("%w: %s is %s", ErrNotActive, unit, text)
 	}
+}
+
+// launchdRunning is the state launchctl print shows for a job whose process
+// is up. print succeeds for any loaded job, so the exit status alone would
+// pass a job whose process has exited.
+const launchdRunning = "running"
+
+// checkAgent asks launchd for the job and reads its state line.
+func (manager *Manager) checkAgent(ctx context.Context, service Service) error {
+	target := manager.target(service)
+
+	output, err := manager.runner.Run(ctx, "launchctl", "print", target)
+	if cut := interrupted(ctx, err); cut != nil {
+		return cut
+	}
+
+	if err != nil {
+		return fmt.Errorf("%w: %s is not loaded: %w", ErrNotActive, target, err)
+	}
+
+	for line := range strings.Lines(string(output)) {
+		state, ok := strings.CutPrefix(strings.TrimSpace(line), "state = ")
+		if !ok {
+			continue
+		}
+
+		if state == launchdRunning {
+			return nil
+		}
+
+		return fmt.Errorf("%w: %s is loaded but its state is %q", ErrNotActive, target, state)
+	}
+
+	return fmt.Errorf("%w: launchctl print shows no state for %s", ErrNotActive, target)
 }
 
 // checkBin rejects a binary the service manager could not start: a relative
@@ -294,8 +332,9 @@ func (manager *Manager) bootstrap(ctx context.Context, path string) error {
 			}
 		}
 
-		if _, err = manager.launchctl(ctx, "bootstrap", manager.domain(), path); err == nil {
-			return nil
+		_, err = manager.launchctl(ctx, "bootstrap", manager.domain(), path)
+		if err == nil || errors.Is(err, ErrInterrupted) {
+			return err
 		}
 	}
 
@@ -343,8 +382,23 @@ func (manager *Manager) run(ctx context.Context, name string, args ...string) ([
 	}
 
 	if text := strings.TrimSpace(string(output)); text != "" {
-		return output, fmt.Errorf("%w: %w: %s", ErrManager, err, text)
+		err = fmt.Errorf("%w: %s", err, text)
+	}
+
+	if cut := interrupted(ctx, err); cut != nil {
+		return output, cut
 	}
 
 	return output, fmt.Errorf("%w: %w", ErrManager, err)
+}
+
+// interrupted turns a command error into ErrInterrupted when the caller's
+// context ended, which is what cut the command short. A manager refusal is
+// not an interrupt, so the result is nil while the context lives.
+func interrupted(ctx context.Context, err error) error {
+	if err == nil || ctx.Err() == nil {
+		return nil
+	}
+
+	return fmt.Errorf("%w: %w", ErrInterrupted, err)
 }

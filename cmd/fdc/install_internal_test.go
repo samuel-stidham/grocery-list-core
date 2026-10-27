@@ -418,7 +418,7 @@ func TestInstallReportsAnInterruptedWait(t *testing.T) {
 		t.Fatalf("stdout %q", stdout.String())
 	}
 
-	for _, want := range []string{"interrupted while waiting", "may still come up"} {
+	for _, want := range []string{"interrupted while waiting", "rerun the command"} {
 		if !strings.Contains(stderr.String(), want) {
 			t.Errorf("stderr lacks %q: %s", want, stderr.String())
 		}

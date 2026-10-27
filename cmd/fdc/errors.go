@@ -84,8 +84,8 @@ func serveHint(err error) error {
 func daemonHint(err error) error {
 	switch {
 	case errors.Is(err, daemon.ErrInterrupted):
-		return fmt.Errorf("%w: the service file is written, so the daemon may still come up, see "+
-			"`systemctl --user status %s` on Linux or `launchctl print gui/$(id -u)/%s` on macOS",
+		return fmt.Errorf("%w: the daemon may be up or not, see `systemctl --user status %s` on Linux or "+
+			"`launchctl print gui/$(id -u)/%s` on macOS, then rerun the command to finish",
 			err, serviceName, serviceLabel)
 	case errors.Is(err, daemon.ErrUnsupportedPlatform):
 		return fmt.Errorf("%w: install writes a systemd user unit on Linux or a launchd agent on macOS, nothing else", err)

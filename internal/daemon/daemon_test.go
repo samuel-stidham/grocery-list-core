@@ -120,6 +120,17 @@ func target(service daemon.Service) string {
 	return fmt.Sprintf("gui/%d/%s", os.Getuid(), service.Label)
 }
 
+// runningAgent answers launchctl print the way launchd does for a loaded job
+// whose process is up.
+func runningAgent(service daemon.Service) map[string]string {
+	return map[string]string{"launchctl print " + target(service): printOutput(service, "running")}
+}
+
+func printOutput(service daemon.Service, state string) string {
+	return fmt.Sprintf("%s = {\n\tactive count = 1\n\tpath = %s\n\tstate = %s\n\n\tprogram = %s\n}\n",
+		target(service), service.Label+".plist", state, service.Bin)
+}
+
 func assertCalls(t *testing.T, rec *recorder, want ...string) {
 	t.Helper()
 
@@ -388,7 +399,10 @@ func TestInstallRefusesABinaryTheManagerCouldNotStart(t *testing.T) {
 
 func TestInstallDarwinReplacesTheAgent(t *testing.T) {
 	home, service := setup(t)
-	rec := &recorder{fails: map[string]error{"launchctl bootout " + target(service): errors.New("exit status 3")}}
+	rec := &recorder{
+		outputs: runningAgent(service),
+		fails:   map[string]error{"launchctl bootout " + target(service): errors.New("exit status 3")},
+	}
 	manager := newManager(t, daemon.Darwin, rec)
 
 	path, err := manager.Install(context.Background(), service)
@@ -428,7 +442,7 @@ func TestInstallDarwinRetriesBootstrapWhileTheOldJobIsTornDown(t *testing.T) {
 	plist := filepath.Join(home, "Library", "LaunchAgents", "me.samuelstidham.fdc.plist")
 	domain := fmt.Sprintf("gui/%d", os.Getuid())
 	bootstrap := "launchctl bootstrap " + domain + " " + plist
-	rec := &recorder{transient: map[string]int{bootstrap: 2}}
+	rec := &recorder{outputs: runningAgent(service), transient: map[string]int{bootstrap: 2}}
 
 	if _, err := newManager(t, daemon.Darwin, rec).Install(context.Background(), service); err != nil {
 		t.Fatal(err)
@@ -452,16 +466,24 @@ func TestInstallDarwinReportsAnInterruptBetweenBootstrapAttempts(t *testing.T) {
 		fails:   map[string]error{bootstrap: errors.New("exit status 5")},
 	}
 
-	// The interrupt lands while bootstrap waits to try again.
+	// The interrupt lands while bootstrap waits to try again, well inside
+	// the 200 ms retry delay. Should the machine stall past the delay, the
+	// interrupt cuts the next attempt short instead, and the refusal still
+	// travels with the error.
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
+	t.Cleanup(cancel)
+	time.AfterFunc(20*time.Millisecond, cancel)
 
 	_, err := newManager(t, daemon.Darwin, rec).Install(ctx, service)
 	if !errors.Is(err, daemon.ErrInterrupted) || !strings.Contains(err.Error(), "Input/output error") {
 		t.Fatalf("err = %v", err)
 	}
 
-	assertCalls(t, rec, "launchctl bootout "+target(service), bootstrap)
+	// The refusal rides along as ErrManager too. The hint chain matches
+	// ErrInterrupted first for that reason. Check is never reached.
+	if !errors.Is(err, daemon.ErrManager) || slices.Contains(rec.calls, "launchctl print "+target(service)) {
+		t.Fatalf("err = %v, calls %q", err, rec.calls)
+	}
 
 	if _, err := os.Stat(plist); err != nil {
 		t.Fatalf("the plist must stay for launchd to pick up: %v", err)
@@ -500,8 +522,116 @@ func TestInstallDarwinReportsAnAgentLaunchdDoesNotKnow(t *testing.T) {
 	rec := &recorder{fails: map[string]error{"launchctl print " + target(service): errors.New("exit status 113")}}
 
 	_, err := newManager(t, daemon.Darwin, rec).Install(context.Background(), service)
-	if !errors.Is(err, daemon.ErrNotActive) {
+	if !errors.Is(err, daemon.ErrNotActive) || !strings.Contains(err.Error(), "is not loaded") {
 		t.Fatalf("err = %v", err)
+	}
+
+	// The status hint must win at the command boundary, so the refusal is
+	// not a manager error as well.
+	if errors.Is(err, daemon.ErrManager) {
+		t.Fatalf("err carries ErrManager: %v", err)
+	}
+}
+
+func TestCheckDarwinReadsTheStateLine(t *testing.T) {
+	_, service := setup(t)
+	printCall := "launchctl print " + target(service)
+
+	cases := map[string]struct {
+		output string
+		want   string
+	}{
+		"running":      {printOutput(service, "running"), ""},
+		"exited":       {printOutput(service, "not running"), `state is "not running"`},
+		"waiting":      {printOutput(service, "waiting"), `state is "waiting"`},
+		"no state":     {target(service) + " = {\n\tactive count = 0\n}\n", "shows no state"},
+		"empty output": {"", "shows no state"},
+	}
+
+	for name, tc := range cases {
+		rec := &recorder{outputs: map[string]string{printCall: tc.output}}
+
+		err := newManager(t, daemon.Darwin, rec).Check(context.Background(), service)
+
+		switch {
+		case tc.want == "" && err != nil:
+			t.Errorf("%s: err = %v", name, err)
+		case tc.want != "" && (!errors.Is(err, daemon.ErrNotActive) || !strings.Contains(err.Error(), tc.want)):
+			t.Errorf("%s: err = %v, want %q", name, err, tc.want)
+		}
+	}
+}
+
+func TestInstallReportsAnInterruptedManagerCommand(t *testing.T) {
+	// The interrupt kills the child, and the runner reports the kill. The
+	// unit file is already in place either way.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	killed := errors.New("signal: killed")
+
+	cases := map[daemon.Platform]string{
+		daemon.Linux:  "systemctl --user daemon-reload",
+		daemon.Darwin: "launchctl bootstrap",
+	}
+
+	for platform, command := range cases {
+		home, service := setup(t)
+		rec := &recorder{}
+		manager := newManager(t, platform, rec)
+
+		if platform == daemon.Darwin {
+			command += fmt.Sprintf(" gui/%d %s", os.Getuid(), manager.Path(service))
+		}
+
+		rec.fails = map[string]error{command: killed}
+
+		_, err := manager.Install(ctx, service)
+		if !errors.Is(err, daemon.ErrInterrupted) || !errors.Is(err, killed) {
+			t.Errorf("%s: err = %v", platform, err)
+		}
+
+		if errors.Is(err, daemon.ErrManager) {
+			t.Errorf("%s: err carries ErrManager: %v", platform, err)
+		}
+
+		if _, err := os.Stat(manager.Path(service)); err != nil {
+			t.Errorf("%s: service file must stay: %v", platform, err)
+		}
+
+		if last := rec.calls[len(rec.calls)-1]; last != command {
+			t.Errorf("%s: ran on after the kill, last %q, home %s", platform, last, home)
+		}
+	}
+}
+
+func TestCheckReportsAnInterruptNotAState(t *testing.T) {
+	_, service := setup(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	killed := errors.New("signal: killed")
+
+	cases := map[daemon.Platform]string{
+		daemon.Linux:  "systemctl --user is-active fdc.service",
+		daemon.Darwin: "launchctl print " + target(service),
+	}
+
+	for platform, command := range cases {
+		rec := &recorder{fails: map[string]error{command: killed}}
+
+		err := newManager(t, platform, rec).Check(ctx, service)
+		if !errors.Is(err, daemon.ErrInterrupted) || errors.Is(err, daemon.ErrNotActive) {
+			t.Errorf("%s: err = %v", platform, err)
+		}
+	}
+
+	// A refusal while the context lives is a state, not an interrupt.
+	rec := &recorder{fails: map[string]error{cases[daemon.Linux]: errors.New("exit status 3")}}
+
+	err := newManager(t, daemon.Linux, rec).Check(context.Background(), service)
+	if !errors.Is(err, daemon.ErrNotActive) || errors.Is(err, daemon.ErrInterrupted) {
+		t.Errorf("live context: err = %v", err)
 	}
 }
 
@@ -575,7 +705,10 @@ func TestUninstallKeepsTheUnitWhenTheManagerRefuses(t *testing.T) {
 
 func TestUninstallDarwinIgnoresAnAgentThatIsNotLoaded(t *testing.T) {
 	_, service := setup(t)
-	rec := &recorder{fails: map[string]error{"launchctl bootout " + target(service): errors.New("exit status 3")}}
+	rec := &recorder{
+		outputs: runningAgent(service),
+		fails:   map[string]error{"launchctl bootout " + target(service): errors.New("exit status 3")},
+	}
 	manager := newManager(t, daemon.Darwin, rec)
 
 	path, err := manager.Install(context.Background(), service)

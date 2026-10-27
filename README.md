@@ -89,11 +89,13 @@ file at another binary, which must be an absolute path to an executable
 file. `--print` shows the file without touching anything. After the
 restart, install asks `/v1/about` on the listen address. Then it asks the
 service manager once more, so a stray process on the port cannot pass for
-the unit. It fails with the status hint when the daemon does not answer
-within five seconds, because `systemctl restart` returns before the port is
-bound. Ctrl-C during that wait ends install early. The report then says the
-daemon may still come up, and names the status command. The database is
-built separately.
+the unit. On macOS that reads the state line of `launchctl print`, because
+a loaded job whose process exited still prints. Install fails with the
+status hint when the daemon does not answer within five seconds, because
+`systemctl restart` returns before the port is bound. Ctrl-C anywhere after
+the file is written ends install early. The report then names the status
+command, since the daemon may still come up, and says to rerun install. The
+database is built separately.
 `fdc import --out ~/.local/share/fdc/fdc.sqlite` writes the path the unit
 serves, and `systemctl --user restart fdc` picks the new file up.
 

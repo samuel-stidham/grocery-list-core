@@ -19,8 +19,9 @@ var (
 	// ErrNotInstalled means there is no service file to remove.
 	ErrNotInstalled = errors.New("service is not installed")
 	// ErrInterrupted means the caller gave up before the service manager
-	// confirmed the daemon, by Ctrl-C in practice. The service file is in
-	// place, so the daemon may come up anyway. The error can carry a manager
-	// refusal too, when the interrupt landed between bootstrap attempts.
+	// finished or confirmed the daemon, by Ctrl-C in practice. The daemon is
+	// in whatever state the manager reached. The error carries the command
+	// that was cut short, or the last refusal when the interrupt landed
+	// between bootstrap attempts.
 	ErrInterrupted = errors.New("interrupted")
 )
