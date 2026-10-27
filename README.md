@@ -83,11 +83,22 @@ after a rebuild is the upgrade: the file is rewritten and the service
 restarted on the new binary.
 
 `fdc install` takes the serve flags, so `--db`, `--listen`, and the log
-settings end up in the service file. `--bin` points it at another binary,
-and `--print` shows the file without touching anything. The database is
-built separately. `fdc import --out ~/.local/share/fdc/fdc.sqlite` writes the
-path the unit serves, and `systemctl --user restart fdc` picks the new file
-up.
+settings end up in the service file. `make install
+INSTALL_FLAGS='--listen 127.0.0.1:9000'` forwards them. `--bin` points the
+file at another binary, and `--print` shows it without touching anything.
+After the restart, install asks `/v1/about` on the listen address. It fails
+with the status hint when the daemon does not answer within five seconds,
+because `systemctl restart` returns before the port is bound. The database
+is built separately. `fdc import --out ~/.local/share/fdc/fdc.sqlite` writes
+the path the unit serves, and `systemctl --user restart fdc` picks the new
+file up.
+
+The unit is wanted by `default.target`, so it starts at login and stops at
+logout. For a machine that must serve after a reboot with nobody logged in,
+enable lingering once with `loginctl enable-linger $USER`. `PrivateTmp=yes`
+in the unit needs unprivileged user namespaces, which mainstream kernels
+allow. A hardened kernel that refuses them fails the unit at start, and the
+journal names the key.
 
 `make uninstall` stops the service, removes its file and the binary, and
 leaves the database and the log in place.

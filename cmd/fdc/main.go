@@ -20,7 +20,6 @@ import (
 	"time"
 
 	"github.com/samuel-stidham/grocery-list-core/internal/api"
-	"github.com/samuel-stidham/grocery-list-core/internal/daemon"
 	"github.com/samuel-stidham/grocery-list-core/internal/datatypes"
 	"github.com/samuel-stidham/grocery-list-core/internal/importer"
 	"github.com/samuel-stidham/grocery-list-core/internal/logging"
@@ -87,9 +86,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 		return exitOK
 	case "install":
-		return runInstall(args[1:], stdout, stderr, daemon.ExecRunner{}, daemon.Platform(runtime.GOOS))
+		return runInstall(args[1:], stdout, stderr, realInstaller())
 	case "uninstall":
-		return runUninstall(args[1:], stdout, stderr, daemon.ExecRunner{}, daemon.Platform(runtime.GOOS))
+		return runUninstall(args[1:], stdout, stderr, realInstaller())
 	case "-h", "--help", "help":
 		usage(stdout)
 

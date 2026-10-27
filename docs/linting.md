@@ -83,8 +83,9 @@ The daemon package runs `systemctl` and `launchctl` with arguments built
 from the `Service` fields and the paths package. gosec flags any subprocess
 whose arguments are not all literals. The command name is one of two
 constants chosen by the manager. Nothing passes through a shell, and the
-only caller is the install command with the user's own flags. Tests never
-reach this method: they inject a recorder in place of the runner.
+only caller is the install command with the user's own flags. The manager
+tests inject a recorder in place of the runner. One test runs the method
+itself, with the literal arguments `echo` and `sh -c`.
 
 **`#nosec G204` on the `go list` call in `cmd/fdc/deps_test.go`.**
 The import direction test asks `go list -deps` which packages each inner

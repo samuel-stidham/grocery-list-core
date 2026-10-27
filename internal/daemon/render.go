@@ -19,6 +19,9 @@ func Render(platform Platform, service Service) []byte {
 // renderUnit writes the systemd user unit. The service restarts on failure
 // and never on a clean stop, so systemctl stop stays stopped. The two
 // hardening keys are the ones a user manager applies without privileges.
+// PrivateTmp needs unprivileged user namespaces, which mainstream kernels
+// allow. A hardened kernel that refuses them fails the unit at start, and
+// the journal names the key.
 func renderUnit(service Service) []byte {
 	words := make([]string, 0, len(service.Args)+1)
 	for _, word := range commandLine(service) {

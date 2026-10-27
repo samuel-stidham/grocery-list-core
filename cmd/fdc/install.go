@@ -6,11 +6,15 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"syscall"
+	"time"
 
 	"github.com/samuel-stidham/grocery-list-core/internal/daemon"
 	"github.com/samuel-stidham/grocery-list-core/internal/paths"
@@ -23,6 +27,29 @@ const (
 	serviceLabel       = "me.samuelstidham.fdc"
 	serviceDescription = "FoodData Central nutrient API (fdc)"
 )
+
+// Probe timing. systemctl restart returns once the process exists, before
+// it has opened the database or bound the port, so install asks the daemon
+// itself. Opening the database takes well under a second on a cold cache.
+const (
+	probeTimeout  = 5 * time.Second
+	probeInterval = 200 * time.Millisecond
+	probeRequest  = time.Second
+)
+
+// installer holds what install and uninstall talk to: the service manager,
+// the platform, and the daemon itself. Tests swap all three.
+type installer struct {
+	runner   daemon.Runner
+	platform daemon.Platform
+	// probe reports whether a daemon answers on the listen address.
+	probe func(ctx context.Context, listen string) error
+}
+
+// realInstaller talks to this machine.
+func realInstaller() installer {
+	return installer{runner: daemon.ExecRunner{}, platform: daemon.Platform(runtime.GOOS), probe: waitForAbout}
+}
 
 // installFlags are the serve flags the service file will carry, plus where
 // the installed binary is and whether to only print the file.
@@ -80,15 +107,15 @@ func (flags installFlags) service() daemon.Service {
 	}
 }
 
-// runInstall writes and starts the user daemon. The runner and the platform
-// come from the caller, so tests drive it without a service manager.
-func runInstall(args []string, stdout, stderr io.Writer, runner daemon.Runner, platform daemon.Platform) int {
+// runInstall writes and starts the user daemon, then waits for it to answer
+// before calling the install a success.
+func runInstall(args []string, stdout, stderr io.Writer, deps installer) int {
 	flags, err := parseInstallFlags(args, stderr)
 	if err != nil {
 		return exitUsage
 	}
 
-	manager, err := daemon.New(platform, runner)
+	manager, err := daemon.New(deps.platform, deps.runner)
 	if err != nil {
 		sayf(stderr, "fdc install: %v", userHint(err))
 
@@ -96,7 +123,7 @@ func runInstall(args []string, stdout, stderr io.Writer, runner daemon.Runner, p
 	}
 
 	if flags.print {
-		_, _ = stdout.Write(daemon.Render(platform, flags.service()))
+		_, _ = stdout.Write(daemon.Render(deps.platform, flags.service()))
 
 		return exitOK
 	}
@@ -112,14 +139,30 @@ func runInstall(args []string, stdout, stderr io.Writer, runner daemon.Runner, p
 	}
 
 	sayf(stdout, "wrote %s", path)
-	sayf(stdout, "%s is running on %s, logging to %s", serviceName, flags.listen, flags.logFile)
+
+	if err := deps.probe(ctx, flags.listen); err != nil {
+		sayf(stderr, "fdc install: %v", userHint(err))
+
+		return exitFailure
+	}
+
+	sayf(stdout, "%s is running on %s, logging to %s", serviceName, flags.listen, logTarget(flags.logFile))
 
 	return exitOK
 }
 
+// logTarget names where the daemon logs, for the install report.
+func logTarget(logFile string) string {
+	if logFile == "" {
+		return "stderr, which the service manager keeps"
+	}
+
+	return logFile
+}
+
 // runUninstall stops the daemon and removes its service file. The binary,
 // the database and the log stay.
-func runUninstall(args []string, stdout, stderr io.Writer, runner daemon.Runner, platform daemon.Platform) int {
+func runUninstall(args []string, stdout, stderr io.Writer, deps installer) int {
 	set := flag.NewFlagSet("fdc uninstall", flag.ContinueOnError)
 	set.SetOutput(stderr)
 
@@ -127,7 +170,7 @@ func runUninstall(args []string, stdout, stderr io.Writer, runner daemon.Runner,
 		return exitUsage
 	}
 
-	manager, err := daemon.New(platform, runner)
+	manager, err := daemon.New(deps.platform, deps.runner)
 	if err != nil {
 		sayf(stderr, "fdc uninstall: %v", userHint(err))
 
@@ -154,4 +197,74 @@ func runUninstall(args []string, stdout, stderr io.Writer, runner daemon.Runner,
 	sayf(stdout, "the database and the log were left in place")
 
 	return exitOK
+}
+
+// waitForAbout polls the daemon's about endpoint until it answers or the
+// probe timeout passes.
+func waitForAbout(ctx context.Context, listen string) error {
+	return pollAbout(ctx, aboutURL(listen), probeTimeout)
+}
+
+// pollAbout asks url every probe interval. Anything but a 200 within timeout
+// is ErrNotActive, carrying the last answer or connection error.
+func pollAbout(ctx context.Context, url string, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	client := &http.Client{Timeout: probeRequest}
+	ticker := time.NewTicker(probeInterval)
+
+	defer ticker.Stop()
+
+	for {
+		last := probeOnce(ctx, client, url)
+		if last == nil {
+			return nil
+		}
+
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("%w: no answer from %s within %s: %w", daemon.ErrNotActive, url, timeout, last)
+		case <-ticker.C:
+		}
+	}
+}
+
+// probeOnce makes one probe request and reads the body out so the connection
+// is reused.
+func probeOnce(ctx context.Context, client *http.Client, url string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return fmt.Errorf("probe request: %w", err)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("probe: %w", err)
+	}
+
+	defer func() { _ = resp.Body.Close() }()
+
+	_, _ = io.Copy(io.Discard, resp.Body)
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("probe: %s answered %d", url, resp.StatusCode)
+	}
+
+	return nil
+}
+
+// aboutURL is the daemon's about endpoint for a -listen address. An empty
+// host means every interface, and loopback is the one to ask.
+func aboutURL(listen string) string {
+	host, port, err := net.SplitHostPort(listen)
+	if err != nil {
+		return "http://" + listen + "/v1/about"
+	}
+
+	if host == "" {
+		host = "127.0.0.1"
+	}
+
+	return "http://" + net.JoinHostPort(host, port) + "/v1/about"
 }

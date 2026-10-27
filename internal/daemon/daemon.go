@@ -119,6 +119,12 @@ func (manager *Manager) Install(ctx context.Context, service Service) (string, e
 	}
 
 	if manager.platform == Darwin {
+		// launchd opens the stderr file before the binary runs, so the
+		// directory the daemon would create on its own must exist already.
+		if err := os.MkdirAll(filepath.Dir(service.StderrLog), dirMode); err != nil {
+			return "", fmt.Errorf("create %s: %w", filepath.Dir(service.StderrLog), err)
+		}
+
 		return path, manager.loadAgent(ctx, service, path)
 	}
 

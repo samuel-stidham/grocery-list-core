@@ -4,11 +4,16 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/samuel-stidham/grocery-list-core/internal/daemon"
 	"github.com/samuel-stidham/grocery-list-core/internal/paths"
@@ -32,6 +37,15 @@ func (fake *fakeRunner) Run(_ context.Context, name string, args ...string) ([]b
 // activeRunner answers is-active the way a healthy unit does.
 func activeRunner() *fakeRunner {
 	return &fakeRunner{outputs: map[string]string{"systemctl --user is-active fdc.service": "active\n"}}
+}
+
+// testInstaller wires a fake runner to a probe that always answers.
+func testInstaller(runner daemon.Runner, platform daemon.Platform) installer {
+	return installer{
+		runner:   runner,
+		platform: platform,
+		probe:    func(context.Context, string) error { return nil },
+	}
 }
 
 // installHome points every default path at a fresh directory and returns it
@@ -62,13 +76,24 @@ func unitPath(home string) string {
 	return filepath.Join(home, ".config", "systemd", "user", "fdc.service")
 }
 
+func TestRealInstallerTalksToThisMachine(t *testing.T) {
+	deps := realInstaller()
+	if deps.platform != daemon.Platform(runtime.GOOS) || deps.probe == nil {
+		t.Fatalf("realInstaller = %+v", deps)
+	}
+
+	if _, ok := deps.runner.(daemon.ExecRunner); !ok {
+		t.Fatalf("runner %T", deps.runner)
+	}
+}
+
 func TestInstallPrintChangesNothing(t *testing.T) {
 	home, bin := installHome(t)
 	fake := &fakeRunner{}
 
 	var stdout, stderr bytes.Buffer
 
-	code := runInstall([]string{"-print", "-bin", bin}, &stdout, &stderr, fake, daemon.Linux)
+	code := runInstall([]string{"-print", "-bin", bin}, &stdout, &stderr, testInstaller(fake, daemon.Linux))
 	if code != exitOK {
 		t.Fatalf("code %d stderr %q", code, stderr.String())
 	}
@@ -102,7 +127,9 @@ func TestInstallWritesTheUnitAndReportsIt(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 
-	code := runInstall([]string{"-bin", bin, "-log-json", "-verbose"}, &stdout, &stderr, fake, daemon.Linux)
+	deps := testInstaller(fake, daemon.Linux)
+
+	code := runInstall([]string{"-bin", bin, "-log-json", "-verbose"}, &stdout, &stderr, deps)
 	if code != exitOK {
 		t.Fatalf("code %d stderr %q", code, stderr.String())
 	}
@@ -129,8 +156,46 @@ func TestInstallWritesTheUnitAndReportsIt(t *testing.T) {
 	}
 }
 
+func TestInstallNamesStderrWhenThereIsNoLogFile(t *testing.T) {
+	_, bin := installHome(t)
+
+	var stdout bytes.Buffer
+
+	deps := testInstaller(activeRunner(), daemon.Linux)
+
+	code := runInstall([]string{"-bin", bin, "-log-file", ""}, &stdout, io.Discard, deps)
+	if code != exitOK || !strings.Contains(stdout.String(), "logging to stderr") {
+		t.Fatalf("code %d stdout %q", code, stdout.String())
+	}
+}
+
+func TestInstallFailsWhenTheDaemonNeverAnswers(t *testing.T) {
+	home, bin := installHome(t)
+	deps := testInstaller(activeRunner(), daemon.Linux)
+	deps.probe = func(_ context.Context, listen string) error {
+		return fmt.Errorf("%w: no answer from %s", daemon.ErrNotActive, listen)
+	}
+
+	var stdout, stderr bytes.Buffer
+
+	code := runInstall([]string{"-bin", bin}, &stdout, &stderr, deps)
+	if code != exitFailure {
+		t.Fatalf("code %d", code)
+	}
+
+	if !strings.Contains(stdout.String(), "wrote "+unitPath(home)) || strings.Contains(stdout.String(), "is running") {
+		t.Fatalf("stdout %q", stdout.String())
+	}
+
+	for _, want := range []string{"no answer from 127.0.0.1:8471", "log file"} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Errorf("stderr lacks %q: %s", want, stderr.String())
+		}
+	}
+}
+
 func TestInstallFlagErrors(t *testing.T) {
-	code := runInstall([]string{"-bogus"}, io.Discard, io.Discard, &fakeRunner{}, daemon.Linux)
+	code := runInstall([]string{"-bogus"}, io.Discard, io.Discard, testInstaller(&fakeRunner{}, daemon.Linux))
 	if code != exitUsage {
 		t.Fatalf("code %d", code)
 	}
@@ -146,7 +211,7 @@ func TestInstallMissingBinaryHintsAtMakeInstall(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 
-	code := runInstall([]string{"-bin", bin}, &stdout, &stderr, fake, daemon.Linux)
+	code := runInstall([]string{"-bin", bin}, &stdout, &stderr, testInstaller(fake, daemon.Linux))
 	if code != exitFailure || !strings.Contains(stderr.String(), "make install") {
 		t.Fatalf("code %d stderr %q", code, stderr.String())
 	}
@@ -165,7 +230,7 @@ func TestInstallManagerFailureHintsAtTheUserSession(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 
-	code := runInstall([]string{"-bin", bin}, &stdout, &stderr, fake, daemon.Linux)
+	code := runInstall([]string{"-bin", bin}, &stdout, &stderr, testInstaller(fake, daemon.Linux))
 	if code != exitFailure {
 		t.Fatalf("code %d", code)
 	}
@@ -186,7 +251,7 @@ func TestInstallInactiveServiceHintsAtTheLog(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 
-	code := runInstall([]string{"-bin", bin}, &stdout, &stderr, fake, daemon.Linux)
+	code := runInstall([]string{"-bin", bin}, &stdout, &stderr, testInstaller(fake, daemon.Linux))
 	if code != exitFailure {
 		t.Fatalf("code %d", code)
 	}
@@ -203,14 +268,14 @@ func TestInstallAndUninstallRejectAnUnknownPlatform(t *testing.T) {
 
 	var stderr bytes.Buffer
 
-	code := runInstall([]string{"-bin", bin}, io.Discard, &stderr, &fakeRunner{}, "plan9")
+	code := runInstall([]string{"-bin", bin}, io.Discard, &stderr, testInstaller(&fakeRunner{}, "plan9"))
 	if code != exitFailure || !strings.Contains(stderr.String(), "unsupported platform") {
 		t.Fatalf("install: code %d stderr %q", code, stderr.String())
 	}
 
 	stderr.Reset()
 
-	code = runUninstall(nil, io.Discard, &stderr, &fakeRunner{}, "plan9")
+	code = runUninstall(nil, io.Discard, &stderr, testInstaller(&fakeRunner{}, "plan9"))
 	if code != exitFailure || !strings.Contains(stderr.String(), "unsupported platform") {
 		t.Fatalf("uninstall: code %d stderr %q", code, stderr.String())
 	}
@@ -219,8 +284,9 @@ func TestInstallAndUninstallRejectAnUnknownPlatform(t *testing.T) {
 func TestUninstallRemovesTheUnit(t *testing.T) {
 	home, bin := installHome(t)
 	fake := activeRunner()
+	deps := testInstaller(fake, daemon.Linux)
 
-	if code := runInstall([]string{"-bin", bin}, io.Discard, io.Discard, fake, daemon.Linux); code != exitOK {
+	if code := runInstall([]string{"-bin", bin}, io.Discard, io.Discard, deps); code != exitOK {
 		t.Fatalf("install code %d", code)
 	}
 
@@ -228,7 +294,7 @@ func TestUninstallRemovesTheUnit(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 
-	code := runUninstall(nil, &stdout, &stderr, fake, daemon.Linux)
+	code := runUninstall(nil, &stdout, &stderr, deps)
 	if code != exitOK {
 		t.Fatalf("code %d stderr %q", code, stderr.String())
 	}
@@ -255,7 +321,7 @@ func TestUninstallWhenNothingIsInstalled(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 
-	code := runUninstall(nil, &stdout, &stderr, fake, daemon.Linux)
+	code := runUninstall(nil, &stdout, &stderr, testInstaller(fake, daemon.Linux))
 	if code != exitOK || !strings.Contains(stdout.String(), "nothing installed at "+unitPath(home)) {
 		t.Fatalf("code %d stdout %q stderr %q", code, stdout.String(), stderr.String())
 	}
@@ -266,7 +332,7 @@ func TestUninstallWhenNothingIsInstalled(t *testing.T) {
 }
 
 func TestUninstallFlagErrors(t *testing.T) {
-	code := runUninstall([]string{"-bogus"}, io.Discard, io.Discard, &fakeRunner{}, daemon.Linux)
+	code := runUninstall([]string{"-bogus"}, io.Discard, io.Discard, testInstaller(&fakeRunner{}, daemon.Linux))
 	if code != exitUsage {
 		t.Fatalf("code %d", code)
 	}
@@ -283,5 +349,76 @@ func TestInstallCommandsAreWired(t *testing.T) {
 	code, _, stderr = runCapture("uninstall", "-h")
 	if code != exitUsage || !strings.Contains(stderr, "Usage of fdc uninstall") {
 		t.Fatalf("uninstall -h: code %d stderr %q", code, stderr)
+	}
+}
+
+func TestPollAboutAcceptsOnlyA200(t *testing.T) {
+	ctx := context.Background()
+
+	healthy := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(healthy.Close)
+
+	if err := pollAbout(ctx, healthy.URL+"/v1/about", time.Second); err != nil {
+		t.Fatalf("healthy daemon: %v", err)
+	}
+
+	wrong := httptest.NewServer(http.NotFoundHandler())
+	t.Cleanup(wrong.Close)
+
+	err := pollAbout(ctx, wrong.URL+"/v1/about", 300*time.Millisecond)
+	if !errors.Is(err, daemon.ErrNotActive) || !strings.Contains(err.Error(), "answered 404") {
+		t.Fatalf("404 daemon: %v", err)
+	}
+
+	closed := httptest.NewServer(http.NotFoundHandler())
+	url := closed.URL
+	closed.Close()
+
+	err = pollAbout(ctx, url+"/v1/about", 300*time.Millisecond)
+	if !errors.Is(err, daemon.ErrNotActive) || !strings.Contains(err.Error(), "no answer from "+url) {
+		t.Fatalf("closed port: %v", err)
+	}
+}
+
+func TestPollAboutKeepsTryingUntilTheDaemonIsUp(t *testing.T) {
+	var hits int
+
+	late := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		hits++
+		if hits < 3 {
+			writer.WriteHeader(http.StatusServiceUnavailable)
+
+			return
+		}
+
+		writer.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(late.Close)
+
+	if err := pollAbout(context.Background(), late.URL+"/v1/about", 2*time.Second); err != nil {
+		t.Fatalf("daemon that comes up on the third try: %v", err)
+	}
+
+	if hits != 3 {
+		t.Fatalf("hits = %d", hits)
+	}
+}
+
+func TestAboutURL(t *testing.T) {
+	cases := map[string]string{
+		"127.0.0.1:8471": "http://127.0.0.1:8471/v1/about",
+		":8471":          "http://127.0.0.1:8471/v1/about",
+		"[::1]:8471":     "http://[::1]:8471/v1/about",
+		"0.0.0.0:80":     "http://0.0.0.0:80/v1/about",
+		"localhost:8471": "http://localhost:8471/v1/about",
+		"no-port":        "http://no-port/v1/about",
+	}
+
+	for listen, want := range cases {
+		if got := aboutURL(listen); got != want {
+			t.Errorf("aboutURL(%q) = %q, want %q", listen, got, want)
+		}
 	}
 }

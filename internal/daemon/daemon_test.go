@@ -86,6 +86,7 @@ func setup(t *testing.T) (string, daemon.Service) {
 
 	service := goldenService()
 	service.Bin = bin
+	service.StderrLog = filepath.Join(home, "Library", "Logs", "fdc", "fdc.stderr.log")
 
 	return home, service
 }
@@ -349,6 +350,12 @@ func TestInstallDarwinReplacesTheAgent(t *testing.T) {
 		"launchctl bootstrap "+domain+" "+path,
 		"launchctl print "+target(service),
 	)
+
+	// launchd opens StandardErrorPath itself, so its directory must exist
+	// before bootstrap.
+	if info, err := os.Stat(filepath.Dir(service.StderrLog)); err != nil || !info.IsDir() {
+		t.Fatalf("stderr log directory: %v", err)
+	}
 }
 
 func TestInstallDarwinReportsAnAgentLaunchdDoesNotKnow(t *testing.T) {

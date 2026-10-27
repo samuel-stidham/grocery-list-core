@@ -11,22 +11,17 @@ import (
 
 const appName = "fdc"
 
-// home returns the user's home directory. When the environment has none,
+// Home returns the user's home directory. When the environment has none,
 // paths fall back to the working directory, which is documented behaviour
-// for a process started without HOME.
-func home() string {
+// for a process started without HOME. The daemon writers build the service
+// file path from it.
+func Home() string {
 	dir, err := os.UserHomeDir()
 	if err != nil {
 		return "."
 	}
 
 	return dir
-}
-
-// Home is the user's home directory, or the working directory without one.
-// The daemon writers build the service file path from it.
-func Home() string {
-	return home()
 }
 
 // ConfigDir is the user configuration root on Linux, where the systemd user
@@ -36,7 +31,7 @@ func ConfigDir() string {
 		return xdg
 	}
 
-	return filepath.Join(home(), ".config")
+	return filepath.Join(Home(), ".config")
 }
 
 // HomeError reports why the home directory could not be resolved, or nil.
@@ -53,14 +48,14 @@ func HomeError() error {
 // DataDir is the directory of the served database.
 func DataDir() string {
 	if runtime.GOOS == "darwin" {
-		return filepath.Join(home(), "Library", "Application Support", appName)
+		return filepath.Join(Home(), "Library", "Application Support", appName)
 	}
 
 	if xdg := os.Getenv("XDG_DATA_HOME"); xdg != "" {
 		return filepath.Join(xdg, appName)
 	}
 
-	return filepath.Join(home(), ".local", "share", appName)
+	return filepath.Join(Home(), ".local", "share", appName)
 }
 
 // DefaultDB is the database path the serve and install commands default to.
@@ -71,14 +66,14 @@ func DefaultDB() string {
 // LogDir is the platform user log directory.
 func LogDir() string {
 	if runtime.GOOS == "darwin" {
-		return filepath.Join(home(), "Library", "Logs", appName)
+		return filepath.Join(Home(), "Library", "Logs", appName)
 	}
 
 	if xdg := os.Getenv("XDG_STATE_HOME"); xdg != "" {
 		return filepath.Join(xdg, appName)
 	}
 
-	return filepath.Join(home(), ".local", "state", appName)
+	return filepath.Join(Home(), ".local", "state", appName)
 }
 
 // DefaultLog is the daemon log file.
@@ -88,5 +83,5 @@ func DefaultLog() string {
 
 // DefaultBin is where make install puts the binary.
 func DefaultBin() string {
-	return filepath.Join(home(), ".local", "bin", appName)
+	return filepath.Join(Home(), ".local", "bin", appName)
 }

@@ -14,6 +14,8 @@ LDFLAGS        := -s -w -X main.version=$(LOCAL_VERSION)
 GOFLAGS        := -trimpath
 PLATFORMS      := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64
 BIN_DIR        := $(HOME)/.local/bin
+# Extra flags for fdc install, for example INSTALL_FLAGS='--listen 127.0.0.1:9000'.
+INSTALL_FLAGS  ?=
 
 # The data pipeline. fetch.sh pins the release, import reads the extracted
 # directory, and the test instance serves the database in the checkout.
@@ -59,7 +61,7 @@ build-all: ## Cross-compile linux/amd64, linux/arm64, darwin/amd64, darwin/arm64
 install: build ## Copy the binary to ~/.local/bin and install the user daemon (systemd or launchd).
 	install -d -m 0755 $(BIN_DIR)
 	install -m 0755 dist/$(BIN) $(BIN_DIR)/$(BIN)
-	$(BIN_DIR)/$(BIN) install
+	$(BIN_DIR)/$(BIN) install $(INSTALL_FLAGS)
 
 .PHONY: uninstall
 uninstall: ## Stop and remove the user daemon and the binary. The database and the log stay.
