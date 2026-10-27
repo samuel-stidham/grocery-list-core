@@ -1,0 +1,15 @@
+# Build output
+dist/
+
+# Databases
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite-journal
+
+# USDA data: everything except the docs and the fetch script
+data/*
+!data/README.md
+!data/ATTRIBUTION.md
+!data/fetch.sh
+artifacts/

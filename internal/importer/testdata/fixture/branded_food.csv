@@ -1,0 +1,7 @@
+"fdc_id","brand_owner","brand_name","subbrand_name","gtin_upc","ingredients","not_a_significant_source_of","serving_size","serving_size_unit","household_serving_fulltext","branded_food_category","data_source","package_weight","modified_date","available_date","market_country","discontinued_date","preparation_state_code","trade_channel","short_description","material_code"
+"1105904","Richardson Oilseed Products (US) Limited","","","00027000612323","Vegetable Oil","","15.0","ml","1 Tbsp (15 ml)","Oils Edible","GDSN","","2020-10-02","2020-11-13","United States","","","","",""
+"1105906","Testbrand Foods","TESTBRAND","","00012345678905","WATER, LENTILS, CARROTS, SALT.","","245.0","g","1 cup (245 g)","Prepared Soups","LI","","2021-01-01","2021-01-01","United States","","","","",""
+"2456687","Example Foods Co","","","00099999000011","FLOUR, WATER, CHEESE","","156.0","GRM","1 Pizza (156g)","Pizza","LI","","2022-10-28","2022-10-28","United States","","","","",""
+"2457171","Example Beverages","","","00099999000028","CARBONATED WATER","","355.0","MLT","","Water","LI","","2022-10-28","2022-10-28","United States","","","","",""
+"9000002","Not a branded food","","","","","","","","","","","","","","","","","","",""
+"","Orphan Brand","","","","","","","","","","","","","","","","","","",""
