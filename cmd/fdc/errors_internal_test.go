@@ -31,10 +31,11 @@ func TestUserHintNamesTheNextStep(t *testing.T) {
 			&net.OpError{Op: "listen", Err: &os.SyscallError{Syscall: "bind", Err: syscall.EADDRINUSE}},
 			"another fdc is probably running",
 		},
-		"platform":   {fmt.Errorf("%w: %q", daemon.ErrUnsupportedPlatform, "plan9"), "systemd user unit"},
-		"binary":     {fmt.Errorf("%w: x", daemon.ErrBinMissing), "make install"},
-		"manager":    {fmt.Errorf("%w: exit status 1", daemon.ErrManager), "systemctl --user status"},
-		"not active": {fmt.Errorf("%w: fdc.service is failed", daemon.ErrNotActive), "launchctl print gui/$(id -u)/"},
+		"platform":    {fmt.Errorf("%w: %q", daemon.ErrUnsupportedPlatform, "plan9"), "systemd user unit"},
+		"binary":      {fmt.Errorf("%w: x", daemon.ErrBinMissing), "make install"},
+		"manager":     {fmt.Errorf("%w: exit status 1", daemon.ErrManager), "systemctl --user status"},
+		"not active":  {fmt.Errorf("%w: fdc.service is failed", daemon.ErrNotActive), "launchctl print gui/$(id -u)/"},
+		"interrupted": {fmt.Errorf("%w while waiting for x", daemon.ErrInterrupted), "may still come up"},
 	}
 
 	for name, tc := range cases {

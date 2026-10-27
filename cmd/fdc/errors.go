@@ -91,6 +91,9 @@ func daemonHint(err error) error {
 	case errors.Is(err, daemon.ErrNotActive):
 		return fmt.Errorf("%w: see `systemctl --user status %s` on Linux or `launchctl print gui/$(id -u)/%s` "+
 			"on macOS, and the log file, for the reason", err, serviceName, serviceLabel)
+	case errors.Is(err, daemon.ErrInterrupted):
+		return fmt.Errorf("%w: the service file is written and the service manager was told to start the "+
+			"daemon, so it may still come up", err)
 	default:
 		return nil
 	}

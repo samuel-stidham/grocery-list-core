@@ -5,11 +5,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/samuel-stidham/grocery-list-core/internal/daemon"
 )
@@ -17,6 +20,7 @@ import (
 const (
 	testDirMode  = 0o750
 	testFileMode = 0o600
+	testBinMode  = 0o700
 )
 
 // goldenService carries every character the writers must handle: spaces, a
@@ -89,15 +93,27 @@ func setup(t *testing.T) (string, daemon.Service) {
 		t.Fatal(err)
 	}
 
-	if err := os.WriteFile(bin, []byte("#!/bin/sh\n"), testFileMode); err != nil {
-		t.Fatal(err)
-	}
+	writeExecutable(t, bin)
 
 	service := goldenService()
 	service.Bin = bin
 	service.StderrLog = filepath.Join(home, "Library", "Logs", "fdc", "fdc.stderr.log")
 
 	return home, service
+}
+
+// writeExecutable writes a script the service manager could start. The file
+// mode is the one the install target gives the real binary.
+func writeExecutable(t *testing.T, path string) {
+	t.Helper()
+
+	if err := os.WriteFile(path, []byte("#!/bin/sh\n"), testFileMode); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.Chmod(path, testBinMode); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func target(service daemon.Service) string {
@@ -345,10 +361,16 @@ func TestInstallRefusesABinaryTheManagerCouldNotStart(t *testing.T) {
 	rec := &recorder{}
 	manager := newManager(t, daemon.Linux, rec)
 
+	plain := filepath.Join(home, "bin", "plain")
+	if err := os.WriteFile(plain, []byte("#!/bin/sh\n"), testFileMode); err != nil {
+		t.Fatal(err)
+	}
+
 	cases := map[string]string{
-		"missing":   filepath.Join(home, "bin", "missing"),
-		"relative":  "dist/fdc",
-		"directory": filepath.Join(home, "bin"),
+		"missing":        filepath.Join(home, "bin", "missing"),
+		"relative":       "dist/fdc",
+		"directory":      filepath.Join(home, "bin"),
+		"not executable": plain,
 	}
 
 	for name, bin := range cases {
@@ -563,5 +585,93 @@ func TestExecRunnerReturnsOutputAndNamesAFailedCommand(t *testing.T) {
 	output, err = daemon.ExecRunner{}.Run(ctx, "sh", "-c", "echo oops >&2; exit 3")
 	if err == nil || !strings.Contains(string(output), "oops") || !strings.Contains(err.Error(), "sh -c") {
 		t.Fatalf("failing command: %q %v", output, err)
+	}
+}
+
+func TestWaitForAcceptsOnlyA200(t *testing.T) {
+	ctx := context.Background()
+
+	healthy := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(healthy.Close)
+
+	if err := daemon.WaitFor(ctx, healthy.URL+"/v1/about", time.Second); err != nil {
+		t.Fatalf("healthy daemon: %v", err)
+	}
+
+	wrong := httptest.NewServer(http.NotFoundHandler())
+	t.Cleanup(wrong.Close)
+
+	err := daemon.WaitFor(ctx, wrong.URL+"/v1/about", 300*time.Millisecond)
+	if !errors.Is(err, daemon.ErrNotActive) || !strings.Contains(err.Error(), "answered 404") {
+		t.Fatalf("404 daemon: %v", err)
+	}
+
+	closed := httptest.NewServer(http.NotFoundHandler())
+	url := closed.URL
+	closed.Close()
+
+	err = daemon.WaitFor(ctx, url+"/v1/about", 300*time.Millisecond)
+	if !errors.Is(err, daemon.ErrNotActive) || !strings.Contains(err.Error(), "no answer from "+url) {
+		t.Fatalf("closed port: %v", err)
+	}
+
+	err = daemon.WaitFor(ctx, "http://bad host/v1/about", 300*time.Millisecond)
+	if !errors.Is(err, daemon.ErrNotActive) || !strings.Contains(err.Error(), "probe request") {
+		t.Fatalf("unusable url: %v", err)
+	}
+}
+
+func TestWaitForKeepsTryingUntilTheDaemonIsUp(t *testing.T) {
+	var hits int
+
+	late := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		hits++
+		if hits < 3 {
+			writer.WriteHeader(http.StatusServiceUnavailable)
+
+			return
+		}
+
+		writer.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(late.Close)
+
+	if err := daemon.WaitFor(context.Background(), late.URL+"/v1/about", 2*time.Second); err != nil {
+		t.Fatalf("daemon that comes up on the third try: %v", err)
+	}
+
+	if hits != 3 {
+		t.Fatalf("hits = %d", hits)
+	}
+}
+
+func TestWaitForReportsAnInterruptNotADeadDaemon(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	// The daemon is still starting when the interrupt arrives.
+	starting := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		cancel()
+		writer.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(starting.Close)
+
+	url := starting.URL + "/v1/about"
+
+	err := daemon.WaitFor(ctx, url, time.Minute)
+	if !errors.Is(err, daemon.ErrInterrupted) || errors.Is(err, daemon.ErrNotActive) {
+		t.Fatalf("err = %v", err)
+	}
+
+	if want := "interrupted while waiting for " + url; err.Error() != want {
+		t.Fatalf("err = %q, want %q", err.Error(), want)
+	}
+
+	// A context that is already canceled never reaches the network.
+	err = daemon.WaitFor(ctx, "http://127.0.0.1:1/v1/about", time.Minute)
+	if !errors.Is(err, daemon.ErrInterrupted) {
+		t.Fatalf("canceled before the first probe: %v", err)
 	}
 }

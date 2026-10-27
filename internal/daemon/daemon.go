@@ -22,6 +22,10 @@ import (
 const (
 	dirMode  = 0o750
 	fileMode = 0o600
+	// executableBits is any execute permission. A binary without one fails
+	// at start, with a message from the service manager instead of from
+	// install.
+	executableBits = 0o111
 )
 
 // launchctl bootout returns before the job is torn down, so a bootstrap of
@@ -223,7 +227,7 @@ func (manager *Manager) Check(ctx context.Context, service Service) error {
 }
 
 // checkBin rejects a binary the service manager could not start: a relative
-// path, a missing file, or a directory.
+// path, a missing file, a directory, or a file nobody may execute.
 func checkBin(bin string) error {
 	if !filepath.IsAbs(bin) {
 		return fmt.Errorf("%w: %q is not an absolute path", ErrBinMissing, bin)
@@ -236,6 +240,10 @@ func checkBin(bin string) error {
 
 	if info.IsDir() {
 		return fmt.Errorf("%w: %s is a directory", ErrBinMissing, bin)
+	}
+
+	if info.Mode().Perm()&executableBits == 0 {
+		return fmt.Errorf("%w: %s is not executable", ErrBinMissing, bin)
 	}
 
 	return nil

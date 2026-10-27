@@ -6,14 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/samuel-stidham/grocery-list-core/internal/daemon"
 	"github.com/samuel-stidham/grocery-list-core/internal/paths"
@@ -78,7 +76,13 @@ func installHome(t *testing.T) (string, string) {
 		t.Fatal(err)
 	}
 
+	// The install target gives the real binary this mode, and checkBin wants
+	// the executable bit.
 	if err := os.WriteFile(bin, []byte("#!/bin/sh\n"), testFileMode); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.Chmod(bin, testBinMode); err != nil {
 		t.Fatal(err)
 	}
 
@@ -111,18 +115,29 @@ func TestInstallPrintChangesNothing(t *testing.T) {
 		t.Fatalf("code %d stderr %q", code, stderr.String())
 	}
 
-	wants := []string{
-		"ExecStart=" + bin + " serve",
-		"--db " + paths.DefaultDB(),
-		"--listen 127.0.0.1:8471",
-		"--log-file " + paths.DefaultLog(),
-		"--log-max-mb 10 --log-keep 5",
+	flags, err := parseInstallFlags([]string{"-bin", bin}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
 	}
 
-	for _, want := range wants {
-		if !strings.Contains(stdout.String(), want) {
-			t.Errorf("printed unit lacks %q:\n%s", want, stdout.String())
-		}
+	// The printed file is the one install would write, with every serve
+	// flag at its default. The paths differ per platform, so the arguments
+	// are compared as a list, not as text inside the rendered unit.
+	if want := string(daemon.Render(daemon.Linux, flags.service())); stdout.String() != want {
+		t.Fatalf("printed:\n%s\nwant:\n%s", stdout.String(), want)
+	}
+
+	wantArgs := []string{
+		"serve",
+		"--db", paths.DefaultDB(),
+		"--listen", "127.0.0.1:8471",
+		"--log-file", paths.DefaultLog(),
+		"--log-max-mb", "10",
+		"--log-keep", "5",
+	}
+
+	if service := flags.service(); service.Bin != bin || !slices.Equal(service.Args, wantArgs) {
+		t.Fatalf("service %+v, want bin %s args %q", service, bin, wantArgs)
 	}
 
 	if len(fake.calls) != 0 {
@@ -386,57 +401,37 @@ func TestInstallCommandsAreWired(t *testing.T) {
 	}
 }
 
-func TestPollAboutAcceptsOnlyA200(t *testing.T) {
-	ctx := context.Background()
-
-	healthy := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
-		writer.WriteHeader(http.StatusOK)
-	}))
-	t.Cleanup(healthy.Close)
-
-	if err := pollAbout(ctx, healthy.URL+"/v1/about", time.Second); err != nil {
-		t.Fatalf("healthy daemon: %v", err)
+func TestInstallReportsAnInterruptedWait(t *testing.T) {
+	_, bin := installHome(t)
+	deps := testInstaller(activeRunner(), daemon.Linux)
+	deps.probe = func(context.Context, string) error {
+		return fmt.Errorf("%w while waiting for http://127.0.0.1:8471/v1/about", daemon.ErrInterrupted)
 	}
 
-	wrong := httptest.NewServer(http.NotFoundHandler())
-	t.Cleanup(wrong.Close)
+	var stdout, stderr bytes.Buffer
 
-	err := pollAbout(ctx, wrong.URL+"/v1/about", 300*time.Millisecond)
-	if !errors.Is(err, daemon.ErrNotActive) || !strings.Contains(err.Error(), "answered 404") {
-		t.Fatalf("404 daemon: %v", err)
+	if code := runInstall([]string{"-bin", bin}, &stdout, &stderr, deps); code != exitFailure {
+		t.Fatalf("code %d", code)
 	}
 
-	closed := httptest.NewServer(http.NotFoundHandler())
-	url := closed.URL
-	closed.Close()
+	if strings.Contains(stdout.String(), "is running") {
+		t.Fatalf("stdout %q", stdout.String())
+	}
 
-	err = pollAbout(ctx, url+"/v1/about", 300*time.Millisecond)
-	if !errors.Is(err, daemon.ErrNotActive) || !strings.Contains(err.Error(), "no answer from "+url) {
-		t.Fatalf("closed port: %v", err)
+	for _, want := range []string{"interrupted while waiting", "may still come up"} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Errorf("stderr lacks %q: %s", want, stderr.String())
+		}
 	}
 }
 
-func TestPollAboutKeepsTryingUntilTheDaemonIsUp(t *testing.T) {
-	var hits int
+func TestWaitForAboutPassesTheCancelThrough(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
 
-	late := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
-		hits++
-		if hits < 3 {
-			writer.WriteHeader(http.StatusServiceUnavailable)
-
-			return
-		}
-
-		writer.WriteHeader(http.StatusOK)
-	}))
-	t.Cleanup(late.Close)
-
-	if err := pollAbout(context.Background(), late.URL+"/v1/about", 2*time.Second); err != nil {
-		t.Fatalf("daemon that comes up on the third try: %v", err)
-	}
-
-	if hits != 3 {
-		t.Fatalf("hits = %d", hits)
+	err := waitForAbout(ctx, "127.0.0.1:1")
+	if !errors.Is(err, daemon.ErrInterrupted) || !strings.Contains(err.Error(), "http://127.0.0.1:1/v1/about") {
+		t.Fatalf("err = %v", err)
 	}
 }
 

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -28,14 +27,10 @@ const (
 	serviceDescription = "FoodData Central nutrient API (fdc)"
 )
 
-// Probe timing. systemctl restart returns once the process exists, before
-// it has opened the database or bound the port, so install asks the daemon
-// itself. Opening the database takes well under a second on a cold cache.
-const (
-	probeTimeout  = 5 * time.Second
-	probeInterval = 200 * time.Millisecond
-	probeRequest  = time.Second
-)
+// probeTimeout bounds the wait for the daemon's first answer. systemctl
+// restart returns once the process exists, before it has opened the database
+// or bound the port, so install asks the daemon itself.
+const probeTimeout = 5 * time.Second
 
 // installer holds what install and uninstall talk to: the service manager,
 // the platform, and the daemon itself. Tests swap all three.
@@ -208,56 +203,11 @@ func runUninstall(args []string, stdout, stderr io.Writer, deps installer) int {
 	return exitOK
 }
 
-// waitForAbout polls the daemon's about endpoint until it answers or the
-// probe timeout passes.
+// waitForAbout waits for the daemon's about endpoint to answer, for up to
+// the probe timeout.
 func waitForAbout(ctx context.Context, listen string) error {
-	return pollAbout(ctx, aboutURL(listen), probeTimeout)
-}
-
-// pollAbout asks url every probe interval. Anything but a 200 within timeout
-// is ErrNotActive, carrying the last answer or connection error.
-func pollAbout(ctx context.Context, url string, timeout time.Duration) error {
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	client := &http.Client{Timeout: probeRequest}
-	ticker := time.NewTicker(probeInterval)
-
-	defer ticker.Stop()
-
-	for {
-		last := probeOnce(ctx, client, url)
-		if last == nil {
-			return nil
-		}
-
-		select {
-		case <-ctx.Done():
-			return fmt.Errorf("%w: no answer from %s within %s: %w", daemon.ErrNotActive, url, timeout, last)
-		case <-ticker.C:
-		}
-	}
-}
-
-// probeOnce makes one probe request and reads the body out so the connection
-// is reused.
-func probeOnce(ctx context.Context, client *http.Client, url string) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return fmt.Errorf("probe request: %w", err)
-	}
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return fmt.Errorf("probe: %w", err)
-	}
-
-	defer func() { _ = resp.Body.Close() }()
-
-	_, _ = io.Copy(io.Discard, resp.Body)
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("probe: %s answered %d", url, resp.StatusCode)
+	if err := daemon.WaitFor(ctx, aboutURL(listen), probeTimeout); err != nil {
+		return fmt.Errorf("after the service start: %w", err)
 	}
 
 	return nil

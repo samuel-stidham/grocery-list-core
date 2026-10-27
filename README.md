@@ -85,13 +85,17 @@ restarted on the new binary.
 `fdc install` takes the serve flags, so `--db`, `--listen`, and the log
 settings end up in the service file. `make install
 INSTALL_FLAGS='--listen 127.0.0.1:9000'` forwards them. `--bin` points the
-file at another binary, and `--print` shows it without touching anything.
-After the restart, install asks `/v1/about` on the listen address. It fails
-with the status hint when the daemon does not answer within five seconds,
-because `systemctl restart` returns before the port is bound. The database
-is built separately. `fdc import --out ~/.local/share/fdc/fdc.sqlite` writes
-the path the unit serves, and `systemctl --user restart fdc` picks the new
-file up.
+file at another binary, which must be an absolute path to an executable
+file. `--print` shows the file without touching anything. After the
+restart, install asks `/v1/about` on the listen address. Then it asks the
+service manager once more, so a stray process on the port cannot pass for
+the unit. It fails with the status hint when the daemon does not answer
+within five seconds, because `systemctl restart` returns before the port is
+bound. Ctrl-C during that wait ends install early. The report then says the
+daemon may still come up, because the service manager was already told to
+start it. The database is built separately.
+`fdc import --out ~/.local/share/fdc/fdc.sqlite` writes the path the unit
+serves, and `systemctl --user restart fdc` picks the new file up.
 
 The unit is wanted by `default.target`, so it starts at login and stops at
 logout. For a machine that must serve after a reboot with nobody logged in,
@@ -101,7 +105,8 @@ allow. A hardened kernel that refuses them fails the unit at start, and the
 journal names the key.
 
 `make uninstall` stops the service, removes its file and the binary, and
-leaves the database and the log in place.
+leaves the database and the log in place. It runs the fresh build from
+`dist/`, so it works after the installed binary is gone.
 
 ## Layout
 
@@ -114,7 +119,7 @@ internal/datatypes/   short type names and their USDA values
 internal/meta/        attribution text and the pinned release
 internal/logging/     slog setup and the size-rotating log file writer
 internal/paths/       platform paths for the database, log, binary, and unit
-internal/daemon/      systemd unit and launchd agent writers behind an injected runner
+internal/daemon/      systemd unit and launchd agent writers behind an injected runner, the wait for the first answer
 data/                 fetch.sh, ATTRIBUTION.md, and the ignored downloads
 docs/                 API.md and linting.md
 ```

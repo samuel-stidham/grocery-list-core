@@ -16,7 +16,12 @@ import (
 	"github.com/samuel-stidham/grocery-list-core/internal/logging"
 )
 
-const testFileMode = 0o600
+// Test file modes. testBinMode is what the install target gives the real
+// binary, and checkBin wants the executable bit.
+const (
+	testFileMode = 0o600
+	testBinMode  = 0o700
+)
 
 func runCapture(args ...string) (int, string, string) {
 	var out, errb bytes.Buffer

@@ -64,8 +64,8 @@ install: build ## Copy the binary to ~/.local/bin and install the user daemon (s
 	$(BIN_DIR)/$(BIN) install $(INSTALL_FLAGS)
 
 .PHONY: uninstall
-uninstall: ## Stop and remove the user daemon and the binary. The database and the log stay.
-	$(BIN_DIR)/$(BIN) uninstall
+uninstall: build ## Stop and remove the user daemon and the binary, using a fresh build. The database and the log stay.
+	dist/$(BIN) uninstall
 	rm -f $(BIN_DIR)/$(BIN)
 
 artifacts: ## Create the artifacts folder.
