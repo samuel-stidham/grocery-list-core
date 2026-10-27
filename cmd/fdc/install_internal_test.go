@@ -35,10 +35,10 @@ type answer struct {
 
 func (fake *fakeRunner) Run(_ context.Context, name string, args ...string) ([]byte, error) {
 	line := name + " " + strings.Join(args, " ")
-	seen := strings.Count(strings.Join(fake.calls, "\n")+"\n", line+"\n")
+	repeat := slices.Contains(fake.calls, line)
 	fake.calls = append(fake.calls, line)
 
-	if reply, ok := fake.later[line]; ok && seen > 0 {
+	if reply, ok := fake.later[line]; ok && repeat {
 		return []byte(reply.output), reply.err
 	}
 

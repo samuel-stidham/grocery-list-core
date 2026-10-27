@@ -20,11 +20,17 @@ const (
 
 // WaitFor asks url every 200 ms until it answers 200 or timeout passes.
 // Anything else within the timeout is ErrNotActive, carrying the last answer
-// or connection error. A canceled ctx, an interrupt in practice, is
-// ErrInterrupted, because the daemon may still be coming up.
+// or connection error. A url that cannot be requested at all is ErrNotActive
+// at once, since waiting would not change it. A canceled ctx, an interrupt in
+// practice, is ErrInterrupted, because the daemon may still be coming up.
 func WaitFor(ctx context.Context, url string, timeout time.Duration) error {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return fmt.Errorf("%w: probe request for %s: %w", ErrNotActive, url, err)
+	}
 
 	client := &http.Client{Timeout: probeRequest}
 	ticker := time.NewTicker(probeInterval)
@@ -32,7 +38,7 @@ func WaitFor(ctx context.Context, url string, timeout time.Duration) error {
 	defer ticker.Stop()
 
 	for {
-		last := probeOnce(ctx, client, url)
+		last := probeOnce(client, req)
 		if last == nil {
 			return nil
 		}
@@ -49,14 +55,9 @@ func WaitFor(ctx context.Context, url string, timeout time.Duration) error {
 	}
 }
 
-// probeOnce makes one probe request and reads the body out so the connection
-// is reused.
-func probeOnce(ctx context.Context, client *http.Client, url string) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return fmt.Errorf("probe request: %w", err)
-	}
-
+// probeOnce sends the request and reads the body out so the connection is
+// reused. The request has no body, so it can be sent again.
+func probeOnce(client *http.Client, req *http.Request) error {
 	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("probe: %w", err)
@@ -67,7 +68,7 @@ func probeOnce(ctx context.Context, client *http.Client, url string) error {
 	_, _ = io.Copy(io.Discard, resp.Body)
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("probe: %s answered %d", url, resp.StatusCode)
+		return fmt.Errorf("probe: %s answered %d", req.URL, resp.StatusCode)
 	}
 
 	return nil

@@ -92,8 +92,8 @@ service manager once more, so a stray process on the port cannot pass for
 the unit. It fails with the status hint when the daemon does not answer
 within five seconds, because `systemctl restart` returns before the port is
 bound. Ctrl-C during that wait ends install early. The report then says the
-daemon may still come up, because the service manager was already told to
-start it. The database is built separately.
+daemon may still come up, and names the status command. The database is
+built separately.
 `fdc import --out ~/.local/share/fdc/fdc.sqlite` writes the path the unit
 serves, and `systemctl --user restart fdc` picks the new file up.
 

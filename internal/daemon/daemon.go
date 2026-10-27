@@ -279,7 +279,9 @@ func (manager *Manager) loadAgent(ctx context.Context, service Service, path str
 }
 
 // bootstrap loads the plist, retrying while launchd may still be tearing
-// down the previous job of the same label.
+// down the previous job of the same label. An interrupt between attempts is
+// ErrInterrupted carrying the last refusal, because the plist is in place and
+// launchd may yet pick it up.
 func (manager *Manager) bootstrap(ctx context.Context, path string) error {
 	var err error
 
@@ -287,7 +289,7 @@ func (manager *Manager) bootstrap(ctx context.Context, path string) error {
 		if attempt > 0 {
 			select {
 			case <-ctx.Done():
-				return fmt.Errorf("bootstrap %s: %w", path, ctx.Err())
+				return fmt.Errorf("%w between bootstrap attempts: %w", ErrInterrupted, err)
 			case <-time.After(bootstrapRetryDelay):
 			}
 		}

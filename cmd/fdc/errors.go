@@ -78,9 +78,15 @@ func serveHint(err error) error {
 	}
 }
 
-// daemonHint covers the install and uninstall sentinels.
+// daemonHint covers the install and uninstall sentinels. An interrupt
+// between bootstrap attempts carries the manager's refusal too, so it is
+// matched first.
 func daemonHint(err error) error {
 	switch {
+	case errors.Is(err, daemon.ErrInterrupted):
+		return fmt.Errorf("%w: the service file is written, so the daemon may still come up, see "+
+			"`systemctl --user status %s` on Linux or `launchctl print gui/$(id -u)/%s` on macOS",
+			err, serviceName, serviceLabel)
 	case errors.Is(err, daemon.ErrUnsupportedPlatform):
 		return fmt.Errorf("%w: install writes a systemd user unit on Linux or a launchd agent on macOS, nothing else", err)
 	case errors.Is(err, daemon.ErrBinMissing):
@@ -91,9 +97,6 @@ func daemonHint(err error) error {
 	case errors.Is(err, daemon.ErrNotActive):
 		return fmt.Errorf("%w: see `systemctl --user status %s` on Linux or `launchctl print gui/$(id -u)/%s` "+
 			"on macOS, and the log file, for the reason", err, serviceName, serviceLabel)
-	case errors.Is(err, daemon.ErrInterrupted):
-		return fmt.Errorf("%w: the service file is written and the service manager was told to start the "+
-			"daemon, so it may still come up", err)
 	default:
 		return nil
 	}

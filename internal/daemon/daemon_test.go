@@ -443,6 +443,31 @@ func TestInstallDarwinRetriesBootstrapWhileTheOldJobIsTornDown(t *testing.T) {
 	)
 }
 
+func TestInstallDarwinReportsAnInterruptBetweenBootstrapAttempts(t *testing.T) {
+	home, service := setup(t)
+	plist := filepath.Join(home, "Library", "LaunchAgents", "me.samuelstidham.fdc.plist")
+	bootstrap := fmt.Sprintf("launchctl bootstrap gui/%d %s", os.Getuid(), plist)
+	rec := &recorder{
+		outputs: map[string]string{bootstrap: "Bootstrap failed: 5: Input/output error"},
+		fails:   map[string]error{bootstrap: errors.New("exit status 5")},
+	}
+
+	// The interrupt lands while bootstrap waits to try again.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := newManager(t, daemon.Darwin, rec).Install(ctx, service)
+	if !errors.Is(err, daemon.ErrInterrupted) || !strings.Contains(err.Error(), "Input/output error") {
+		t.Fatalf("err = %v", err)
+	}
+
+	assertCalls(t, rec, "launchctl bootout "+target(service), bootstrap)
+
+	if _, err := os.Stat(plist); err != nil {
+		t.Fatalf("the plist must stay for launchd to pick up: %v", err)
+	}
+}
+
 func TestInstallDarwinGivesUpBootstrapAfterTheRetries(t *testing.T) {
 	home, service := setup(t)
 	plist := filepath.Join(home, "Library", "LaunchAgents", "me.samuelstidham.fdc.plist")
@@ -617,9 +642,17 @@ func TestWaitForAcceptsOnlyA200(t *testing.T) {
 		t.Fatalf("closed port: %v", err)
 	}
 
-	err = daemon.WaitFor(ctx, "http://bad host/v1/about", 300*time.Millisecond)
+	// A url the client cannot even request never gets better, so the
+	// timeout is not waited out.
+	start := time.Now()
+
+	err = daemon.WaitFor(ctx, "http://bad host/v1/about", time.Minute)
 	if !errors.Is(err, daemon.ErrNotActive) || !strings.Contains(err.Error(), "probe request") {
 		t.Fatalf("unusable url: %v", err)
+	}
+
+	if took := time.Since(start); took > time.Second {
+		t.Fatalf("unusable url took %s", took)
 	}
 }
 
