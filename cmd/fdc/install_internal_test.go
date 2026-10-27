@@ -25,11 +25,24 @@ type fakeRunner struct {
 	calls   []string
 	outputs map[string]string
 	fails   map[string]error
+	// later answers a line from its second call on, for a unit that dies
+	// after the daemon answered.
+	later map[string]answer
+}
+
+type answer struct {
+	output string
+	err    error
 }
 
 func (fake *fakeRunner) Run(_ context.Context, name string, args ...string) ([]byte, error) {
 	line := name + " " + strings.Join(args, " ")
+	seen := strings.Count(strings.Join(fake.calls, "\n")+"\n", line+"\n")
 	fake.calls = append(fake.calls, line)
+
+	if reply, ok := fake.later[line]; ok && seen > 0 {
+		return []byte(reply.output), reply.err
+	}
 
 	return []byte(fake.outputs[line]), fake.fails[line]
 }
@@ -151,8 +164,29 @@ func TestInstallWritesTheUnitAndReportsIt(t *testing.T) {
 		}
 	}
 
-	if len(fake.calls) != 4 {
+	// daemon-reload, enable, restart, is-active, and is-active again once
+	// the daemon answered.
+	if len(fake.calls) != 5 || fake.calls[4] != "systemctl --user is-active fdc.service" {
 		t.Fatalf("commands run: %v", fake.calls)
+	}
+}
+
+func TestInstallFailsWhenTheUnitDiesAfterTheDaemonAnswered(t *testing.T) {
+	_, bin := installHome(t)
+	fake := activeRunner()
+	fake.later = map[string]answer{
+		"systemctl --user is-active fdc.service": {output: "failed\n", err: errors.New("exit status 3")},
+	}
+
+	var stdout, stderr bytes.Buffer
+
+	code := runInstall([]string{"-bin", bin}, &stdout, &stderr, testInstaller(fake, daemon.Linux))
+	if code != exitFailure || strings.Contains(stdout.String(), "is running") {
+		t.Fatalf("code %d stdout %q", code, stdout.String())
+	}
+
+	if !strings.Contains(stderr.String(), "fdc.service is failed") {
+		t.Fatalf("stderr %q", stderr.String())
 	}
 }
 

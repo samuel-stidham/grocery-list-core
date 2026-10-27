@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/samuel-stidham/grocery-list-core/internal/paths"
 )
@@ -21,6 +22,14 @@ import (
 const (
 	dirMode  = 0o750
 	fileMode = 0o600
+)
+
+// launchctl bootout returns before the job is torn down, so a bootstrap of
+// the same label right after it can be refused. bootstrap is retried for
+// about a second before the failure counts.
+const (
+	bootstrapAttempts   = 5
+	bootstrapRetryDelay = 200 * time.Millisecond
 )
 
 // Service describes one daemon to install. The frontend repo copies this
@@ -183,6 +192,36 @@ func replaceFile(path string, content []byte) error {
 	return nil
 }
 
+// Check confirms the service manager reports the service as running: active
+// under systemd, loaded under launchd. Install ends with it, and the command
+// calls it again once the daemon has answered, so a stray process on the
+// port cannot pass for a crash looping unit.
+func (manager *Manager) Check(ctx context.Context, service Service) error {
+	if manager.platform == Darwin {
+		if _, err := manager.launchctl(ctx, "print", manager.target(service)); err != nil {
+			return fmt.Errorf("%w: %w", ErrNotActive, err)
+		}
+
+		return nil
+	}
+
+	// is-active exits non-zero for anything but active and prints the
+	// state, so the output is the message. When it prints nothing, the
+	// command itself failed and its error is the message.
+	unit := service.Name + ".service"
+	state, err := manager.runner.Run(ctx, "systemctl", "--user", "is-active", unit)
+	text := strings.TrimSpace(string(state))
+
+	switch {
+	case err == nil && text == "active":
+		return nil
+	case text == "" && err != nil:
+		return fmt.Errorf("%w: %s: %w", ErrNotActive, unit, err)
+	default:
+		return fmt.Errorf("%w: %s is %s", ErrNotActive, unit, text)
+	}
+}
+
 // checkBin rejects a binary the service manager could not start: a relative
 // path, a missing file, or a directory.
 func checkBin(bin string) error {
@@ -204,7 +243,7 @@ func checkBin(bin string) error {
 
 // loadUnit tells systemd about the file, enables it for every login, and
 // restarts it so a running service picks up the new definition. restart
-// starts a stopped service too. is-active then confirms the result.
+// starts a stopped service too. Check then confirms the result.
 func (manager *Manager) loadUnit(ctx context.Context, service Service) error {
 	unit := service.Name + ".service"
 
@@ -214,32 +253,43 @@ func (manager *Manager) loadUnit(ctx context.Context, service Service) error {
 		}
 	}
 
-	// is-active exits non-zero for anything but active and prints the state,
-	// so the output is the message either way.
-	state, err := manager.runner.Run(ctx, "systemctl", "--user", "is-active", unit)
-	if err != nil || strings.TrimSpace(string(state)) != "active" {
-		return fmt.Errorf("%w: %s is %s", ErrNotActive, unit, strings.TrimSpace(string(state)))
-	}
-
-	return nil
+	return manager.Check(ctx, service)
 }
 
 // loadAgent replaces the agent in the user's GUI domain. bootout fails when
 // nothing is loaded, which is the normal first install, so its result is
 // ignored. bootstrap loads the plist, RunAtLoad starts the service, and
-// print confirms launchd knows it.
+// Check confirms launchd knows it.
 func (manager *Manager) loadAgent(ctx context.Context, service Service, path string) error {
 	_, _ = manager.launchctl(ctx, "bootout", manager.target(service))
 
-	if _, err := manager.launchctl(ctx, "bootstrap", manager.domain(), path); err != nil {
+	if err := manager.bootstrap(ctx, path); err != nil {
 		return err
 	}
 
-	if _, err := manager.launchctl(ctx, "print", manager.target(service)); err != nil {
-		return fmt.Errorf("%w: %w", ErrNotActive, err)
+	return manager.Check(ctx, service)
+}
+
+// bootstrap loads the plist, retrying while launchd may still be tearing
+// down the previous job of the same label.
+func (manager *Manager) bootstrap(ctx context.Context, path string) error {
+	var err error
+
+	for attempt := range bootstrapAttempts {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return fmt.Errorf("bootstrap %s: %w", path, ctx.Err())
+			case <-time.After(bootstrapRetryDelay):
+			}
+		}
+
+		if _, err = manager.launchctl(ctx, "bootstrap", manager.domain(), path); err == nil {
+			return nil
+		}
 	}
 
-	return nil
+	return err
 }
 
 // unload stops the service before its file goes. On macOS a service that is

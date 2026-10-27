@@ -89,7 +89,8 @@ func daemonHint(err error) error {
 		return fmt.Errorf("%w: check the user service manager with `systemctl --user status` on Linux "+
 			"or `launchctl print gui/$(id -u)` on macOS", err)
 	case errors.Is(err, daemon.ErrNotActive):
-		return fmt.Errorf("%w: see `systemctl --user status fdc` and the log file for the reason", err)
+		return fmt.Errorf("%w: see `systemctl --user status %s` on Linux or `launchctl print gui/$(id -u)/%s` "+
+			"on macOS, and the log file, for the reason", err, serviceName, serviceLabel)
 	default:
 		return nil
 	}

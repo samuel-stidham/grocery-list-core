@@ -107,8 +107,9 @@ func (flags installFlags) service() daemon.Service {
 	}
 }
 
-// runInstall writes and starts the user daemon, then waits for it to answer
-// before calling the install a success.
+// runInstall writes and starts the user daemon, waits for it to answer, and
+// asks the service manager once more, so the answer came from the unit and
+// not from a stray process on the same port.
 func runInstall(args []string, stdout, stderr io.Writer, deps installer) int {
 	flags, err := parseInstallFlags(args, stderr)
 	if err != nil {
@@ -131,7 +132,9 @@ func runInstall(args []string, stdout, stderr io.Writer, deps installer) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	path, err := manager.Install(ctx, flags.service())
+	service := flags.service()
+
+	path, err := manager.Install(ctx, service)
 	if err != nil {
 		sayf(stderr, "fdc install: %v", userHint(err))
 
@@ -141,6 +144,12 @@ func runInstall(args []string, stdout, stderr io.Writer, deps installer) int {
 	sayf(stdout, "wrote %s", path)
 
 	if err := deps.probe(ctx, flags.listen); err != nil {
+		sayf(stderr, "fdc install: %v", userHint(err))
+
+		return exitFailure
+	}
+
+	if err := manager.Check(ctx, service); err != nil {
 		sayf(stderr, "fdc install: %v", userHint(err))
 
 		return exitFailure

@@ -95,11 +95,16 @@ func commandLine(service Service) []string {
 	return append([]string{service.Bin}, service.Args...)
 }
 
-// unitQuote makes one ExecStart word safe. Unit files expand % specifiers
-// and $ variables inside every Exec value, so both are doubled first. A word
-// with whitespace, quotes, or backslashes is then wrapped in double quotes
-// with systemd's C-style escapes. An empty word becomes "".
+// unitQuote makes one ExecStart word safe. A lone semicolon separates
+// commands in an Exec value and is spelled \; to stay a word. Unit files
+// expand % specifiers and $ variables inside every Exec value, so both are
+// doubled. A word with whitespace, quotes, or backslashes is then wrapped in
+// double quotes with systemd's C-style escapes. An empty word becomes "".
 func unitQuote(word string) string {
+	if word == ";" {
+		return `\;`
+	}
+
 	word = strings.NewReplacer("%", "%%", "$", "$$").Replace(word)
 	if word != "" && !strings.ContainsAny(word, " \t\n\"'\\") {
 		return word

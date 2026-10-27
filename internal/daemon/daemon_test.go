@@ -46,11 +46,20 @@ type recorder struct {
 	calls   []string
 	outputs map[string]string
 	fails   map[string]error
+	// transient counts how many times a line fails before it succeeds, for
+	// a launchd that is still tearing the previous job down.
+	transient map[string]int
 }
 
 func (rec *recorder) Run(_ context.Context, name string, args ...string) ([]byte, error) {
 	line := name + " " + strings.Join(args, " ")
 	rec.calls = append(rec.calls, line)
+
+	if rec.transient[line] > 0 {
+		rec.transient[line]--
+
+		return nil, errors.New("exit status 5")
+	}
 
 	return []byte(rec.outputs[line]), rec.fails[line]
 }
@@ -276,6 +285,40 @@ func TestInstallReportsAServiceThatDidNotComeUp(t *testing.T) {
 	}
 }
 
+func TestCheckNamesTheCommandErrorWhenIsActivePrintsNothing(t *testing.T) {
+	_, service := setup(t)
+	rec := &recorder{
+		fails: map[string]error{"systemctl --user is-active fdc.service": errors.New("exec: systemctl: not found")},
+	}
+
+	err := newManager(t, daemon.Linux, rec).Check(context.Background(), service)
+	if !errors.Is(err, daemon.ErrNotActive) || !strings.Contains(err.Error(), "systemctl: not found") {
+		t.Fatalf("err = %v", err)
+	}
+
+	if strings.Contains(err.Error(), "fdc.service is ") {
+		t.Fatalf("message claims a state it does not have: %v", err)
+	}
+}
+
+func TestCheckPassesOnlyForAnActiveUnit(t *testing.T) {
+	_, service := setup(t)
+	rec := &recorder{outputs: map[string]string{"systemctl --user is-active fdc.service": "active\n"}}
+	manager := newManager(t, daemon.Linux, rec)
+
+	if err := manager.Check(context.Background(), service); err != nil {
+		t.Fatal(err)
+	}
+
+	rec.outputs["systemctl --user is-active fdc.service"] = "activating\n"
+	rec.fails = map[string]error{"systemctl --user is-active fdc.service": errors.New("exit status 3")}
+
+	err := manager.Check(context.Background(), service)
+	if !errors.Is(err, daemon.ErrNotActive) || !strings.Contains(err.Error(), "fdc.service is activating") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
 func TestInstallStopsAtTheFirstManagerFailure(t *testing.T) {
 	_, service := setup(t)
 	rec := &recorder{
@@ -355,6 +398,53 @@ func TestInstallDarwinReplacesTheAgent(t *testing.T) {
 	// before bootstrap.
 	if info, err := os.Stat(filepath.Dir(service.StderrLog)); err != nil || !info.IsDir() {
 		t.Fatalf("stderr log directory: %v", err)
+	}
+}
+
+func TestInstallDarwinRetriesBootstrapWhileTheOldJobIsTornDown(t *testing.T) {
+	home, service := setup(t)
+	plist := filepath.Join(home, "Library", "LaunchAgents", "me.samuelstidham.fdc.plist")
+	domain := fmt.Sprintf("gui/%d", os.Getuid())
+	bootstrap := "launchctl bootstrap " + domain + " " + plist
+	rec := &recorder{transient: map[string]int{bootstrap: 2}}
+
+	if _, err := newManager(t, daemon.Darwin, rec).Install(context.Background(), service); err != nil {
+		t.Fatal(err)
+	}
+
+	assertCalls(t, rec,
+		"launchctl bootout "+target(service),
+		bootstrap,
+		bootstrap,
+		bootstrap,
+		"launchctl print "+target(service),
+	)
+}
+
+func TestInstallDarwinGivesUpBootstrapAfterTheRetries(t *testing.T) {
+	home, service := setup(t)
+	plist := filepath.Join(home, "Library", "LaunchAgents", "me.samuelstidham.fdc.plist")
+	bootstrap := fmt.Sprintf("launchctl bootstrap gui/%d %s", os.Getuid(), plist)
+	rec := &recorder{
+		outputs: map[string]string{bootstrap: "Bootstrap failed: 5: Input/output error"},
+		fails:   map[string]error{bootstrap: errors.New("exit status 5")},
+	}
+
+	_, err := newManager(t, daemon.Darwin, rec).Install(context.Background(), service)
+	if !errors.Is(err, daemon.ErrManager) || !strings.Contains(err.Error(), "Input/output error") {
+		t.Fatalf("err = %v", err)
+	}
+
+	var attempts int
+
+	for _, call := range rec.calls {
+		if call == bootstrap {
+			attempts++
+		}
+	}
+
+	if attempts != 5 {
+		t.Fatalf("bootstrap attempts = %d, calls:\n%s", attempts, strings.Join(rec.calls, "\n"))
 	}
 }
 

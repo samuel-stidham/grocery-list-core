@@ -17,6 +17,9 @@ func TestUnitQuote(t *testing.T) {
 		"":                `""`,
 		"50% of $x here":  `"50%% of $$x here"`,
 		"/home/test user": `"/home/test user"`,
+		";":               `\;`,
+		";;":              ";;",
+		"a;b":             "a;b",
 	}
 
 	for word, want := range cases {
