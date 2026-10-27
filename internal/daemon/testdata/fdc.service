@@ -1,0 +1,12 @@
+[Unit]
+Description=FoodData Central nutrient API (fdc), 100%% local
+
+[Service]
+ExecStart="/home/test user/.local/bin/fdc" serve --db "/home/test user/Data & $$Files/fdc.sqlite" --listen 127.0.0.1:8471 --log-file "/home/test user/logs/100%% rotated/fdc.log" --log-max-mb 10 --log-keep 5
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=default.target

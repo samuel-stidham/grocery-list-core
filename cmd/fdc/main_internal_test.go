@@ -60,15 +60,6 @@ func TestVersion(t *testing.T) {
 	}
 }
 
-func TestInstallNotYet(t *testing.T) {
-	for _, command := range []string{"install", "uninstall"} {
-		code, _, stderr := runCapture(command)
-		if code != exitUsage || !strings.Contains(stderr, "not implemented") {
-			t.Fatalf("%s: code %d stderr %q", command, code, stderr)
-		}
-	}
-}
-
 func TestImportFlagErrors(t *testing.T) {
 	code, _, stderr := runCapture("import")
 	if code != exitUsage || !strings.Contains(stderr, "-src is required") {

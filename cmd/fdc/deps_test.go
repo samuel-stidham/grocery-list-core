@@ -34,7 +34,9 @@ func goListDeps(t *testing.T, pkg string) map[string]bool {
 // data packages know nothing about HTTP or the import pipeline, and the two
 // pipelines know nothing about each other or the command.
 func TestInnerPackagesNeverImportOutward(t *testing.T) {
-	inner := []string{"internal/datatypes", "internal/meta", "internal/store", "internal/paths", "internal/logging"}
+	inner := []string{
+		"internal/datatypes", "internal/meta", "internal/store", "internal/paths", "internal/logging", "internal/daemon",
+	}
 	outer := []string{"internal/api", "internal/importer", "cmd/fdc"}
 
 	for _, pkg := range inner {

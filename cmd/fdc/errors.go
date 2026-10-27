@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"syscall"
 
+	"github.com/samuel-stidham/grocery-list-core/internal/daemon"
 	"github.com/samuel-stidham/grocery-list-core/internal/datatypes"
 	"github.com/samuel-stidham/grocery-list-core/internal/importer"
 	"github.com/samuel-stidham/grocery-list-core/internal/store"
@@ -30,6 +31,10 @@ func userHint(err error) error {
 	}
 
 	if hinted := serveHint(err); hinted != nil {
+		return hinted
+	}
+
+	if hinted := daemonHint(err); hinted != nil {
 		return hinted
 	}
 
@@ -68,6 +73,23 @@ func serveHint(err error) error {
 		return fmt.Errorf("%w: run `make import` first, or pass -db with the path of a built database", err)
 	case errors.Is(err, syscall.EADDRINUSE):
 		return fmt.Errorf("%w: another fdc is probably running, check `systemctl --user status fdc` or pass -listen", err)
+	default:
+		return nil
+	}
+}
+
+// daemonHint covers the install and uninstall sentinels.
+func daemonHint(err error) error {
+	switch {
+	case errors.Is(err, daemon.ErrUnsupportedPlatform):
+		return fmt.Errorf("%w: install writes a systemd user unit on Linux or a launchd agent on macOS, nothing else", err)
+	case errors.Is(err, daemon.ErrBinMissing):
+		return fmt.Errorf("%w: run `make install`, which copies the binary to ~/.local/bin first, or pass -bin", err)
+	case errors.Is(err, daemon.ErrManager):
+		return fmt.Errorf("%w: check the user service manager with `systemctl --user status` on Linux "+
+			"or `launchctl print gui/$(id -u)` on macOS", err)
+	case errors.Is(err, daemon.ErrNotActive):
+		return fmt.Errorf("%w: see `systemctl --user status fdc` and the log file for the reason", err)
 	default:
 		return nil
 	}

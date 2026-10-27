@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/samuel-stidham/grocery-list-core/internal/api"
+	"github.com/samuel-stidham/grocery-list-core/internal/daemon"
 	"github.com/samuel-stidham/grocery-list-core/internal/datatypes"
 	"github.com/samuel-stidham/grocery-list-core/internal/importer"
 	"github.com/samuel-stidham/grocery-list-core/internal/logging"
@@ -85,10 +86,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 		printVersion(stdout)
 
 		return exitOK
-	case "install", "uninstall":
-		sayf(stderr, "fdc %s: not implemented in this milestone", args[0])
-
-		return exitUsage
+	case "install":
+		return runInstall(args[1:], stdout, stderr, daemon.ExecRunner{}, daemon.Platform(runtime.GOOS))
+	case "uninstall":
+		return runUninstall(args[1:], stdout, stderr, daemon.ExecRunner{}, daemon.Platform(runtime.GOOS))
 	case "-h", "--help", "help":
 		usage(stdout)
 
@@ -231,14 +232,7 @@ func parseServeFlags(args []string, stderr io.Writer) (serveFlags, error) {
 
 	set := flag.NewFlagSet("fdc serve", flag.ContinueOnError)
 	set.SetOutput(stderr)
-	set.StringVar(&flags.db, "db", paths.DefaultDB(), "database to serve")
-	set.StringVar(&flags.listen, "listen", defaultListen, "address to listen on")
-	set.StringVar(&flags.logFile, "log-file", "", "append the log to this file instead of stderr, rotating by size")
-	set.IntVar(&flags.logMaxMB, "log-max-mb", int(logging.DefaultMaxBytes/megabyte),
-		"rotate the log file past this many megabytes")
-	set.IntVar(&flags.logKeep, "log-keep", logging.DefaultKeep, "rotated log files to keep")
-	set.BoolVar(&flags.logJSON, "log-json", false, "write log records as JSON objects")
-	set.BoolVar(&flags.verbose, "verbose", false, "log at debug level")
+	bindServeFlags(set, &flags, "")
 
 	if err := set.Parse(args); err != nil {
 		return flags, fmt.Errorf("parse flags: %w", err)
@@ -251,6 +245,22 @@ func parseServeFlags(args []string, stderr io.Writer) (serveFlags, error) {
 	})
 
 	return flags, nil
+}
+
+// bindServeFlags registers the flags serve and install share. install writes
+// them into the service file, so the two commands cannot drift apart. Only
+// the log file default differs: serve logs to stderr unless told otherwise,
+// a daemon always logs to a file.
+func bindServeFlags(set *flag.FlagSet, flags *serveFlags, logFileDefault string) {
+	set.StringVar(&flags.db, "db", paths.DefaultDB(), "database to serve")
+	set.StringVar(&flags.listen, "listen", defaultListen, "address to listen on")
+	set.StringVar(&flags.logFile, "log-file", logFileDefault,
+		"append the log to this file instead of stderr, rotating by size")
+	set.IntVar(&flags.logMaxMB, "log-max-mb", int(logging.DefaultMaxBytes/megabyte),
+		"rotate the log file past this many megabytes")
+	set.IntVar(&flags.logKeep, "log-keep", logging.DefaultKeep, "rotated log files to keep")
+	set.BoolVar(&flags.logJSON, "log-json", false, "write log records as JSON objects")
+	set.BoolVar(&flags.verbose, "verbose", false, "log at debug level")
 }
 
 // serveRun carries what the serve command needs across its steps.

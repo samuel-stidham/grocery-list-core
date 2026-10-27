@@ -70,3 +70,22 @@ func TestHomeError(t *testing.T) {
 		t.Fatal("an empty HOME must be reported")
 	}
 }
+
+func TestConfigDirFollowsXDGThenHome(t *testing.T) {
+	t.Setenv("HOME", "/home/test")
+	t.Setenv("XDG_CONFIG_HOME", "/xdg/config")
+
+	if got := paths.ConfigDir(); got != "/xdg/config" {
+		t.Fatalf("ConfigDir with XDG_CONFIG_HOME = %q", got)
+	}
+
+	t.Setenv("XDG_CONFIG_HOME", "")
+
+	if got := paths.ConfigDir(); got != filepath.Join("/home/test", ".config") {
+		t.Fatalf("ConfigDir without XDG_CONFIG_HOME = %q", got)
+	}
+
+	if got := paths.Home(); got != "/home/test" {
+		t.Fatalf("Home = %q", got)
+	}
+}

@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>me.samuelstidham.fdc</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/home/test user/.local/bin/fdc</string>
+		<string>serve</string>
+		<string>--db</string>
+		<string>/home/test user/Data &amp; $Files/fdc.sqlite</string>
+		<string>--listen</string>
+		<string>127.0.0.1:8471</string>
+		<string>--log-file</string>
+		<string>/home/test user/logs/100% rotated/fdc.log</string>
+		<string>--log-max-mb</string>
+		<string>10</string>
+		<string>--log-keep</string>
+		<string>5</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<dict>
+		<key>SuccessfulExit</key>
+		<false/>
+	</dict>
+	<key>StandardErrorPath</key>
+	<string>/home/test user/Library/Logs/fdc/fdc.stderr.log</string>
+</dict>
+</plist>

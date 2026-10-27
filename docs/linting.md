@@ -56,7 +56,7 @@ path, and the only write goes to the output file the user named.
 
 ## Inline suppressions
 
-The code carries six. There are no others, and this command lists them:
+The code carries seven. There are no others, and this command lists them:
 
 ```sh
 grep -rn 'nolint\|nosec' --include='*.go' .
@@ -77,6 +77,14 @@ only golangci-lint, and `make gosec` would keep reporting the three lines.
 `TestMain` and shared by every test in the package. The database is
 read-only, so sharing it costs no isolation. Building it per test would
 multiply the import time by the test count for nothing.
+
+**`#nosec G204` on `ExecRunner.Run` in `internal/daemon/daemon.go`.**
+The daemon package runs `systemctl` and `launchctl` with arguments built
+from the `Service` fields and the paths package. gosec flags any subprocess
+whose arguments are not all literals. The command name is one of two
+constants chosen by the manager. Nothing passes through a shell, and the
+only caller is the install command with the user's own flags. Tests never
+reach this method: they inject a recorder in place of the runner.
 
 **`#nosec G204` on the `go list` call in `cmd/fdc/deps_test.go`.**
 The import direction test asks `go list -deps` which packages each inner

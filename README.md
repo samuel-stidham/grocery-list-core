@@ -66,8 +66,31 @@ The cause is in the log. Requests must name the server as `127.0.0.1`,
 `localhost`, `::1`, or the `--listen` host. Any other `Host` is a 403.
 
 [docs/API.md](docs/API.md) documents every endpoint with examples.
-[docs/CONTEXT.md](docs/CONTEXT.md) is the design record: every decision, the
-schema, and what was learned about the data.
+
+## Install
+
+```sh
+make install
+```
+
+`make install` builds, copies the binary to `~/.local/bin/fdc`, and runs
+`fdc install`. On Linux that writes the systemd user unit
+`~/.config/systemd/user/fdc.service`, enables it, and restarts it. On macOS
+it writes `~/Library/LaunchAgents/me.samuelstidham.fdc.plist` and bootstraps
+it. The service file carries every serve flag written out, `--log-file`
+included, so it states exactly how the daemon runs. A second `make install`
+after a rebuild is the upgrade: the file is rewritten and the service
+restarted on the new binary.
+
+`fdc install` takes the serve flags, so `--db`, `--listen`, and the log
+settings end up in the service file. `--bin` points it at another binary,
+and `--print` shows the file without touching anything. The database is
+built separately. `fdc import --out ~/.local/share/fdc/fdc.sqlite` writes the
+path the unit serves, and `systemctl --user restart fdc` picks the new file
+up.
+
+`make uninstall` stops the service, removes its file and the binary, and
+leaves the database and the log in place.
 
 ## Layout
 
@@ -79,12 +102,14 @@ internal/api/         the /v1 handlers, request logging, error codes
 internal/datatypes/   short type names and their USDA values
 internal/meta/        attribution text and the pinned release
 internal/logging/     slog setup and the size-rotating log file writer
-internal/paths/       platform paths for the database, log, and binary
+internal/paths/       platform paths for the database, log, binary, and unit
+internal/daemon/      systemd unit and launchd agent writers behind an injected runner
 data/                 fetch.sh, ATTRIBUTION.md, and the ignored downloads
-docs/                 API.md, CONTEXT.md, and linting.md
+docs/                 API.md and linting.md
 ```
 
 ## Status
 
-Milestone 1 is `import` and `serve`. `install` and `uninstall`, which write
-a systemd user unit or a launchd agent, are the next milestone.
+Core is complete: `import`, `serve`, `install`, and `uninstall`. The
+frontend repo builds on the `/v1` API and copies `internal/daemon` and
+`internal/logging` for its own daemon.

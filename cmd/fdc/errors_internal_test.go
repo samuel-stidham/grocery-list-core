@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"testing"
 
+	"github.com/samuel-stidham/grocery-list-core/internal/daemon"
 	"github.com/samuel-stidham/grocery-list-core/internal/datatypes"
 	"github.com/samuel-stidham/grocery-list-core/internal/importer"
 	"github.com/samuel-stidham/grocery-list-core/internal/store"
@@ -30,6 +31,10 @@ func TestUserHintNamesTheNextStep(t *testing.T) {
 			&net.OpError{Op: "listen", Err: &os.SyscallError{Syscall: "bind", Err: syscall.EADDRINUSE}},
 			"another fdc is probably running",
 		},
+		"platform":   {fmt.Errorf("%w: %q", daemon.ErrUnsupportedPlatform, "plan9"), "systemd user unit"},
+		"binary":     {fmt.Errorf("%w: x", daemon.ErrBinMissing), "make install"},
+		"manager":    {fmt.Errorf("%w: exit status 1", daemon.ErrManager), "systemctl --user status"},
+		"not active": {fmt.Errorf("%w: fdc.service is failed", daemon.ErrNotActive), "log file"},
 	}
 
 	for name, tc := range cases {

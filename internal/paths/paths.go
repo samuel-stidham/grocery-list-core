@@ -23,6 +23,22 @@ func home() string {
 	return dir
 }
 
+// Home is the user's home directory, or the working directory without one.
+// The daemon writers build the service file path from it.
+func Home() string {
+	return home()
+}
+
+// ConfigDir is the user configuration root on Linux, where the systemd user
+// unit directory lives. XDG_CONFIG_HOME overrides the ~/.config default.
+func ConfigDir() string {
+	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
+		return xdg
+	}
+
+	return filepath.Join(home(), ".config")
+}
+
 // HomeError reports why the home directory could not be resolved, or nil.
 // Callers log it once at startup so a fallback to the working directory is
 // never silent.

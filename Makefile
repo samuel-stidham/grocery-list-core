@@ -13,6 +13,7 @@ GOVULNCHECK_VERSION := v1.6.0
 LDFLAGS        := -s -w -X main.version=$(LOCAL_VERSION)
 GOFLAGS        := -trimpath
 PLATFORMS      := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64
+BIN_DIR        := $(HOME)/.local/bin
 
 # The data pipeline. fetch.sh pins the release, import reads the extracted
 # directory, and the test instance serves the database in the checkout.
@@ -55,12 +56,15 @@ build-all: ## Cross-compile linux/amd64, linux/arm64, darwin/amd64, darwin/arm64
 	done
 
 .PHONY: install
-install: build ## Install the binary and the user daemon (milestone 2).
-	@echo "install is part of the next milestone"; exit 1
+install: build ## Copy the binary to ~/.local/bin and install the user daemon (systemd or launchd).
+	install -d -m 0755 $(BIN_DIR)
+	install -m 0755 dist/$(BIN) $(BIN_DIR)/$(BIN)
+	$(BIN_DIR)/$(BIN) install
 
 .PHONY: uninstall
-uninstall: ## Remove the user daemon, keep the database (milestone 2).
-	@echo "uninstall is part of the next milestone"; exit 1
+uninstall: ## Stop and remove the user daemon and the binary. The database and the log stay.
+	$(BIN_DIR)/$(BIN) uninstall
+	rm -f $(BIN_DIR)/$(BIN)
 
 artifacts: ## Create the artifacts folder.
 	mkdir -p ./artifacts
